@@ -619,27 +619,41 @@ async function replacePieCharts(
 
   const relsContent = await relsFile.async("text");
   
-  // Pattern to detect text near pie charts - look for allocation/investment language
-  const pieChartContextPattern = /(?:asset\s*allocation|investment\s*mix|portfolio\s*breakdown|equities.*bonds|growth.*defensive|\d+\.?\d*%\s*(?:equities|bonds|growth|defensive))/gi;
+  // CRITICAL: Look specifically for PIE CHART context - must explicitly mention "pie" 
+  // to avoid replacing line charts or other chart types
+  const pieChartContextPattern = /(?:pie\s*chart|asset\s*allocation\s*pie|allocation\s*breakdown|portfolio\s*split\s*chart)/gi;
+  
+  // Also look for specific section headers that typically contain pie charts
+  const allocationSectionPattern = /(?:current\s*asset\s*allocation|portfolio\s*allocation|investment\s*allocation)[^<]{0,500}(?:equities|bonds|growth|defensive)/gi;
   
   // Find the approximate position of pie chart context in the document
-  const contextMatch = pieChartContextPattern.exec(modifiedXml);
-  if (!contextMatch) {
-    console.log("No pie chart context found in document - skipping image replacement to preserve logos");
+  let contextMatch = pieChartContextPattern.exec(modifiedXml);
+  let contextPosition: number | null = null;
+  
+  if (contextMatch) {
+    contextPosition = contextMatch.index;
+    console.log(`Found explicit pie chart context at position ${contextPosition}`);
+  } else {
+    // Fallback: look for allocation section with percentages
+    const allocMatch = allocationSectionPattern.exec(modifiedXml);
+    if (allocMatch) {
+      contextPosition = allocMatch.index;
+      console.log(`Found allocation section context at position ${contextPosition}`);
+    }
+  }
+  
+  if (contextPosition === null) {
+    console.log("No pie chart context found in document - skipping image replacement to preserve other charts");
     return;
   }
   
-  const contextPosition = contextMatch.index;
-  console.log(`Found pie chart context at position ${contextPosition}`);
-  
-  // Find the best candidate image for pie chart replacement
-  // Prefer images that are close to allocation context but not logos
-  let bestCandidate: { path: string; distance: number; position: number } | null = null;
+  // Find all candidate images with their positions
+  const imageCandidates: { path: string; position: number; name: string }[] = [];
   
   for (const imagePath of imageFiles) {
     const imageName = imagePath.split("/").pop() || "";
     
-    // Skip images that are likely logos (often named logo, header, or appear very early in doc)
+    // Skip images that are likely logos
     if (imageName.toLowerCase().includes('logo') || 
         imageName.toLowerCase().includes('header') ||
         imageName.toLowerCase().includes('footer') ||
@@ -657,31 +671,66 @@ async function replacePieCharts(
       
       if (imageMatch) {
         const imagePosition = imageMatch.index;
-        const distanceFromContext = Math.abs(imagePosition - contextPosition);
         
-        console.log(`Image ${imageName} at position ${imagePosition}, distance from context: ${distanceFromContext}`);
-        
-        // Skip images at the very start (likely logo/header area - first 10000 chars covers most headers)
+        // Skip images at the very start (likely logo/header area)
         if (imagePosition < 10000) {
           console.log(`Skipping ${imageName} - appears to be in header/logo area (position ${imagePosition} < 10000)`);
           continue;
         }
         
-        // Track the best candidate (closest to allocation context)
-        if (bestCandidate === null || distanceFromContext < bestCandidate.distance) {
-          bestCandidate = { path: imagePath, distance: distanceFromContext, position: imagePosition };
-        }
+        imageCandidates.push({ path: imagePath, position: imagePosition, name: imageName });
+        console.log(`Image candidate: ${imageName} at position ${imagePosition}`);
       }
     }
   }
   
-  // Replace the best candidate if found (within reasonable distance - 150000 chars)
-  if (bestCandidate && bestCandidate.distance < 150000) {
-    console.log(`Replacing pie chart image: ${bestCandidate.path} (distance: ${bestCandidate.distance})`);
+  if (imageCandidates.length === 0) {
+    console.log("No suitable image candidates found");
+    return;
+  }
+  
+  // Sort candidates by position
+  imageCandidates.sort((a, b) => a.position - b.position);
+  
+  // Find the image that appears AFTER the allocation context (pie charts typically follow the text describing them)
+  // This is more reliable than just "closest" since line charts may also be close to allocation text
+  let bestCandidate: { path: string; position: number; name: string } | null = null;
+  
+  for (const candidate of imageCandidates) {
+    // Look for image AFTER the context (pie chart should follow the allocation text)
+    if (candidate.position > contextPosition) {
+      const distance = candidate.position - contextPosition;
+      console.log(`Candidate ${candidate.name} is ${distance} chars AFTER context`);
+      
+      // Pick the first image after context within reasonable distance
+      if (distance < 100000) {
+        bestCandidate = candidate;
+        console.log(`Selected ${candidate.name} as pie chart (first image after allocation context)`);
+        break;
+      }
+    }
+  }
+  
+  // Fallback: if no image found after context, look for the closest one
+  if (!bestCandidate && imageCandidates.length > 0) {
+    let minDistance = Infinity;
+    for (const candidate of imageCandidates) {
+      const distance = Math.abs(candidate.position - contextPosition);
+      if (distance < minDistance && distance < 150000) {
+        minDistance = distance;
+        bestCandidate = candidate;
+      }
+    }
+    if (bestCandidate) {
+      console.log(`Fallback: Selected ${bestCandidate.name} as closest image to context`);
+    }
+  }
+  
+  // Replace the best candidate if found
+  if (bestCandidate) {
+    console.log(`Replacing pie chart image: ${bestCandidate.path}`);
     zip.file(bestCandidate.path, newPieChartData);
     console.log("Pie chart replaced successfully");
-  } else if (bestCandidate) {
-    console.log(`Best candidate ${bestCandidate.path} too far (${bestCandidate.distance} chars)`);
   } else {
     console.log("No suitable pie chart image found");
   }
