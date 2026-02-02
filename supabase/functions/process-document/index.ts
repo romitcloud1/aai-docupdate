@@ -71,9 +71,65 @@ function extractHighlightedSections(documentXml: string): HighlightedSection[] {
   return highlightedSections;
 }
 
+async function fetchMarketData(): Promise<string> {
+  const alphaVantageKey = Deno.env.get("ALPHA_VANTAGE_API_KEY");
+  
+  if (!alphaVantageKey) {
+    console.log("ALPHA_VANTAGE_API_KEY not configured, using AI-generated estimates");
+    return "";
+  }
+
+  try {
+    // Fetch S&P 500 (SPY) data as a general market benchmark
+    const response = await fetch(
+      `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey=${alphaVantageKey}`
+    );
+    
+    if (!response.ok) {
+      console.log("Failed to fetch market data:", response.status);
+      return "";
+    }
+
+    const data = await response.json();
+    const quote = data["Global Quote"];
+    
+    if (!quote) {
+      console.log("No market data returned");
+      return "";
+    }
+
+    const price = parseFloat(quote["05. price"] || "0");
+    const changePercent = quote["10. change percent"] || "0%";
+    
+    // Also fetch UK market (FTSE) for UK-based documents
+    const ftseResponse = await fetch(
+      `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=EWU&apikey=${alphaVantageKey}`
+    );
+    
+    let ftseData = "";
+    if (ftseResponse.ok) {
+      const ftseJson = await ftseResponse.json();
+      const ftseQuote = ftseJson["Global Quote"];
+      if (ftseQuote) {
+        ftseData = `UK Market (EWU): ${ftseQuote["10. change percent"]} change`;
+      }
+    }
+
+    return `CURRENT MARKET DATA (use for realistic values):
+- S&P 500 (SPY): $${price.toFixed(2)}, ${changePercent} change
+- ${ftseData}
+- Use these trends to inform investment performance figures
+- For UK £ amounts, use realistic variations based on market conditions`;
+  } catch (error) {
+    console.log("Error fetching market data:", error);
+    return "";
+  }
+}
+
 async function generateAllReplacements(
   instructionPrompt: string,
-  sections: HighlightedSection[]
+  sections: HighlightedSection[],
+  marketData: string
 ): Promise<Map<number, string>> {
   const apiKey = Deno.env.get("LOVABLE_API_KEY");
   
@@ -88,6 +144,8 @@ async function generateAllReplacements(
   const sectionsText = sections.map((s, i) => 
     `[Section ${i + 1}]\nContext: ${s.context}\nHighlighted text to replace: "${s.text}"`
   ).join("\n\n");
+
+  const marketContext = marketData ? `\n\n${marketData}` : "";
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -119,9 +177,9 @@ EXAMPLES:
 - "£40,233" → "£43,500" (generate a realistic amount)
 - "[Date]" → "15th January 2024"`
           },
-          {
+        {
             role: "user",
-            content: `DOCUMENT CONTEXT AND INSTRUCTIONS:\n${instructionPrompt}\n\nHIGHLIGHTED SECTIONS REQUIRING REPLACEMENT:\n${sectionsText}\n\nIMPORTANT: You MUST provide a NEW, DIFFERENT replacement for each section. Do not return the original text.`
+            content: `DOCUMENT CONTEXT AND INSTRUCTIONS:\n${instructionPrompt}${marketContext}\n\nHIGHLIGHTED SECTIONS REQUIRING REPLACEMENT:\n${sectionsText}\n\nIMPORTANT: You MUST provide a NEW, DIFFERENT replacement for each section. Do not return the original text.`
           }
         ],
         tools: [
@@ -345,9 +403,16 @@ serve(async (req) => {
       );
     }
 
+    // Fetch market data for realistic values
+    console.log("Fetching current market data...");
+    const marketData = await fetchMarketData();
+    if (marketData) {
+      console.log("Market data fetched successfully");
+    }
+
     // Generate all replacements in a single batched API call
     console.log(`Processing ${highlightedSections.length} highlighted sections in a single batch request`);
-    const replacementMap = await generateAllReplacements(instructionPrompt, highlightedSections);
+    const replacementMap = await generateAllReplacements(instructionPrompt, highlightedSections, marketData);
     
     console.log(`Received ${replacementMap.size} replacements from AI`);
     
