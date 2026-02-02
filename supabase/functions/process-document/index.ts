@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import JSZip from "https://esm.sh/jszip@3.10.1";
+import { encode as base64Encode } from "https://deno.land/std@0.168.0/encoding/base64.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -16,6 +17,13 @@ interface ProcessedReplacement {
   originalText: string;
   newText: string;
   fullMatch: string;
+}
+
+interface PieChartData {
+  imagePath: string;
+  growthPercent: number;
+  defensivePercent: number;
+  labels: string[];
 }
 
 function extractTextFromXml(xmlContent: string): string {
@@ -323,6 +331,222 @@ function escapeXml(text: string): string {
     .replace(/'/g, '&apos;');
 }
 
+// Extract percentage data from document text for pie chart generation
+function extractPercentageData(documentText: string): PieChartData | null {
+  // Look for patterns like "X% growth assets" and "Y% defensive assets"
+  const growthPatterns = [
+    /(\d+\.?\d*)%\s*(?:growth|equity|equities)/gi,
+    /(?:growth|equity|equities)[:\s]*(\d+\.?\d*)%/gi,
+  ];
+  
+  const defensivePatterns = [
+    /(\d+\.?\d*)%\s*(?:defensive|bonds?|fixed)/gi,
+    /(?:defensive|bonds?|fixed)[:\s]*(\d+\.?\d*)%/gi,
+  ];
+
+  let growthPercent: number | null = null;
+  let defensivePercent: number | null = null;
+
+  for (const pattern of growthPatterns) {
+    const match = pattern.exec(documentText);
+    if (match) {
+      growthPercent = parseFloat(match[1]);
+      break;
+    }
+  }
+
+  for (const pattern of defensivePatterns) {
+    const match = pattern.exec(documentText);
+    if (match) {
+      defensivePercent = parseFloat(match[1]);
+      break;
+    }
+  }
+
+  // If we found growth but not defensive, calculate it
+  if (growthPercent !== null && defensivePercent === null) {
+    defensivePercent = 100 - growthPercent;
+  } else if (defensivePercent !== null && growthPercent === null) {
+    growthPercent = 100 - defensivePercent;
+  }
+
+  if (growthPercent !== null && defensivePercent !== null) {
+    return {
+      imagePath: "",
+      growthPercent,
+      defensivePercent,
+      labels: ["Equities", "Bonds"]
+    };
+  }
+
+  return null;
+}
+
+// Generate a new pie chart using AI image generation
+async function generatePieChart(data: PieChartData): Promise<Uint8Array | null> {
+  const apiKey = Deno.env.get("LOVABLE_API_KEY");
+  
+  if (!apiKey) {
+    console.log("LOVABLE_API_KEY not available for pie chart generation");
+    return null;
+  }
+
+  const prompt = `Generate a clean, professional pie chart with exactly 2 segments:
+- Equities: ${data.growthPercent.toFixed(1)}% (use a blue color like #4472C4)
+- Bonds: ${data.defensivePercent.toFixed(1)}% (use a orange/coral color like #ED7D31)
+
+Requirements:
+- Simple, modern financial chart style
+- White background
+- Show percentage labels on or next to each segment (e.g., "52.9%", "47.1%")
+- Include a small legend showing "Equities" and "Bonds" with their colors
+- Clean typography
+- No 3D effects
+- Professional look suitable for a financial document
+- The chart should be clearly readable at 300x300 pixels`;
+
+  try {
+    console.log(`Generating pie chart with Equities: ${data.growthPercent}%, Bonds: ${data.defensivePercent}%`);
+    
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash-image",
+        messages: [
+          {
+            role: "user",
+            content: prompt
+          }
+        ],
+        modalities: ["image", "text"]
+      })
+    });
+
+    if (!response.ok) {
+      console.log(`Pie chart generation failed: ${response.status}`);
+      return null;
+    }
+
+    const result = await response.json();
+    const imageData = result.choices?.[0]?.message?.images?.[0]?.image_url?.url;
+    
+    if (!imageData) {
+      console.log("No image returned from AI");
+      return null;
+    }
+
+    // Extract base64 data from data URL
+    const base64Match = imageData.match(/^data:image\/\w+;base64,(.+)$/);
+    if (!base64Match) {
+      console.log("Invalid image data format");
+      return null;
+    }
+
+    // Decode base64 to Uint8Array
+    const binaryString = atob(base64Match[1]);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    
+    console.log(`Successfully generated pie chart image (${bytes.length} bytes)`);
+    return bytes;
+    
+  } catch (error) {
+    console.log("Error generating pie chart:", error);
+    return null;
+  }
+}
+
+// Find pie chart images in the document and replace them
+async function replacePieCharts(
+  zip: JSZip,
+  documentXml: string,
+  modifiedXml: string
+): Promise<void> {
+  // Extract the new percentage data from the modified document text
+  const modifiedText = extractTextFromXml(modifiedXml);
+  const percentageData = extractPercentageData(modifiedText);
+  
+  if (!percentageData) {
+    console.log("No percentage data found for pie chart generation");
+    return;
+  }
+
+  console.log(`Found percentage data: Equities ${percentageData.growthPercent}%, Bonds ${percentageData.defensivePercent}%`);
+
+  // Find all images in the document
+  const mediaFolder = zip.folder("word/media");
+  if (!mediaFolder) {
+    console.log("No media folder found in document");
+    return;
+  }
+
+  // Get list of image files
+  const imageFiles: string[] = [];
+  zip.forEach((relativePath, file) => {
+    if (relativePath.startsWith("word/media/") && !file.dir) {
+      const ext = relativePath.toLowerCase();
+      if (ext.endsWith(".png") || ext.endsWith(".jpg") || ext.endsWith(".jpeg")) {
+        imageFiles.push(relativePath);
+      }
+    }
+  });
+
+  console.log(`Found ${imageFiles.length} images in document`);
+
+  if (imageFiles.length === 0) {
+    return;
+  }
+
+  // Generate the new pie chart
+  const newPieChartData = await generatePieChart(percentageData);
+  
+  if (!newPieChartData) {
+    console.log("Failed to generate new pie chart");
+    return;
+  }
+
+  // For now, we'll look for images that might be pie charts based on naming or position
+  // A more sophisticated approach would analyze the image content
+  // We'll replace the first suitable image found (typically pie charts are named image1, image2, etc.)
+  
+  // Check document.xml.rels to find which image is used where
+  const relsFile = zip.file("word/_rels/document.xml.rels");
+  if (!relsFile) {
+    console.log("No document.xml.rels found");
+    return;
+  }
+
+  const relsContent = await relsFile.async("text");
+  
+  // Find images that are likely pie charts (we'll use a simple heuristic)
+  // Look for image references near percentage text in the XML
+  for (const imagePath of imageFiles) {
+    const imageName = imagePath.split("/").pop();
+    
+    // Check if this image reference appears near percentage data in the document
+    const imageId = relsContent.match(new RegExp(`Id="([^"]+)"[^>]*Target="media/${imageName}"`));
+    
+    if (imageId) {
+      const rId = imageId[1];
+      // Check if this rId appears in the document near percentage patterns
+      const imageUsagePattern = new RegExp(`<a:blip[^>]*r:embed="${rId}"`, 'i');
+      
+      if (imageUsagePattern.test(documentXml)) {
+        console.log(`Replacing potential pie chart: ${imagePath}`);
+        zip.file(imagePath, newPieChartData);
+        console.log("Pie chart replaced successfully");
+        break; // Only replace first pie chart found
+      }
+    }
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -457,6 +681,10 @@ serve(async (req) => {
     // Create the modified document
     const modifiedXml = replaceHighlightedText(documentXml, replacements);
     clientZip.file("word/document.xml", modifiedXml);
+    
+    // Attempt to regenerate pie charts with new data
+    console.log("Checking for pie charts to regenerate...");
+    await replacePieCharts(clientZip, documentXml, modifiedXml);
     
     const outputBuffer = await clientZip.generateAsync({ 
       type: "arraybuffer",
