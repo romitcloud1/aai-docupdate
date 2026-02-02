@@ -357,11 +357,41 @@ function extractPercentageDataFromReplacements(replacements: ProcessedReplacemen
   let growthPercent: number | null = null;
   let defensivePercent: number | null = null;
 
-  // Collect all percentage values from replacements
+  // PRIORITY: Look for explicit allocation patterns in the NEW replacement text first
+  // These patterns are the most reliable as they directly state the allocation
+  for (const replacement of replacements) {
+    const text = replacement.newText.toLowerCase();
+    
+    // Look for explicit equity/growth allocations like "54.2% in equities" or "54.2% equities"
+    const equityMatch = text.match(/(\d+\.?\d*)\s*%?\s*(?:in\s+)?(?:equit(?:y|ies)|growth|stocks)/);
+    if (equityMatch && growthPercent === null) {
+      growthPercent = parseFloat(equityMatch[1]);
+      console.log(`DIRECT MATCH - Found equity percentage in replacement: ${growthPercent}% from "${replacement.newText.substring(0, 50)}..."`);
+    }
+    
+    // Look for explicit bond/defensive allocations
+    const bondMatch = text.match(/(\d+\.?\d*)\s*%?\s*(?:in\s+)?(?:bonds?|defensive|fixed\s*income)/);
+    if (bondMatch && defensivePercent === null) {
+      defensivePercent = parseFloat(bondMatch[1]);
+      console.log(`DIRECT MATCH - Found bond percentage in replacement: ${defensivePercent}% from "${replacement.newText.substring(0, 50)}..."`);
+    }
+  }
+
+  // If we found both, we're done
+  if (growthPercent !== null && defensivePercent !== null) {
+    console.log(`Final pie chart data from direct matches: Equities ${growthPercent}%, Bonds ${defensivePercent}%`);
+    return {
+      imagePath: "",
+      growthPercent,
+      defensivePercent,
+      labels: ["Equities", "Bonds"]
+    };
+  }
+
+  // Collect all percentage values from replacements for fallback strategies
   const allPercentages: { value: number; newText: string; originalText: string }[] = [];
   
   for (const replacement of replacements) {
-    // Look for percentage patterns in the new text
     const percentMatches = replacement.newText.match(/(\d+\.?\d*)\s*%/g);
     if (percentMatches) {
       for (const match of percentMatches) {
@@ -378,95 +408,58 @@ function extractPercentageDataFromReplacements(replacements: ProcessedReplacemen
   }
 
   console.log(`Found ${allPercentages.length} percentage values in replacements`);
-  
-  // Log all found percentages for debugging
-  for (const p of allPercentages) {
-    console.log(`  Percentage: ${p.value}% from "${p.newText.substring(0, 30)}..."`);
-  }
 
-  // Strategy 1: Look for percentages near equity/growth or bond/defensive keywords in the original context
-  for (const pct of allPercentages) {
-    // Get context around the original text in the document
-    const originalPos = originalDocXml.indexOf(pct.originalText);
-    if (originalPos !== -1) {
-      const start = Math.max(0, originalPos - 300);
-      const end = Math.min(originalDocXml.length, originalPos + 300);
-      const context = originalDocXml.substring(start, end).toLowerCase();
+  // Strategy 2: Look for percentages that appear near equity/bond context in the replacement text
+  if (growthPercent === null || defensivePercent === null) {
+    for (const pct of allPercentages) {
+      const text = pct.newText.toLowerCase();
+      const pctStr = pct.value.toString();
       
-      // Check for growth/equity keywords
-      if (/growth|equity|equities|stock|shares|risk/i.test(context)) {
-        if (growthPercent === null) {
-          growthPercent = pct.value;
-          console.log(`Found growth/equity percentage: ${pct.value}%`);
-        }
+      // Check if this percentage appears in a growth/equity context
+      if (growthPercent === null && 
+          (text.includes('growth') || text.includes('equit') || text.includes('stock')) &&
+          text.includes(pctStr)) {
+        growthPercent = pct.value;
+        console.log(`Context match - Found growth percentage: ${pct.value}%`);
       }
       
-      // Check for defensive/bond keywords  
-      if (/defensive|bond|bonds|fixed|gilt|cash|income/i.test(context)) {
-        if (defensivePercent === null) {
-          defensivePercent = pct.value;
-          console.log(`Found defensive/bond percentage: ${pct.value}%`);
-        }
+      // Check if this percentage appears in a defensive/bond context  
+      if (defensivePercent === null && 
+          (text.includes('defensive') || text.includes('bond') || text.includes('fixed')) &&
+          text.includes(pctStr)) {
+        defensivePercent = pct.value;
+        console.log(`Context match - Found defensive percentage: ${pct.value}%`);
       }
     }
   }
 
-  // Strategy 2: If we found one, calculate the other
+  // Strategy 3: If we have one, calculate the other
   if (growthPercent !== null && defensivePercent === null) {
-    defensivePercent = 100 - growthPercent;
+    defensivePercent = Math.round((100 - growthPercent) * 10) / 10;
     console.log(`Calculated defensive: ${defensivePercent}%`);
   } else if (defensivePercent !== null && growthPercent === null) {
-    growthPercent = 100 - defensivePercent;
+    growthPercent = Math.round((100 - defensivePercent) * 10) / 10;
     console.log(`Calculated growth: ${growthPercent}%`);
   }
 
-  // Strategy 3: Look for pairs that sum to 100
-  if (growthPercent === null && defensivePercent === null) {
-    // Look for two percentages that add up to ~100
+  // Strategy 4: Look for pairs that sum to ~100
+  if (growthPercent === null && defensivePercent === null && allPercentages.length >= 2) {
     for (let i = 0; i < allPercentages.length; i++) {
       for (let j = i + 1; j < allPercentages.length; j++) {
         const sum = allPercentages[i].value + allPercentages[j].value;
         if (Math.abs(sum - 100) < 2) {
-          // Found a likely pair
           const val1 = allPercentages[i].value;
           const val2 = allPercentages[j].value;
           
           // Assume larger is equities (common in balanced portfolios)
           growthPercent = Math.max(val1, val2);
           defensivePercent = Math.min(val1, val2);
-          console.log(`Found pair summing to 100: ${growthPercent}% + ${defensivePercent}%`);
+          console.log(`Found complementary pair: ${growthPercent}% + ${defensivePercent}%`);
           break;
         }
       }
       if (growthPercent !== null) break;
     }
-  }
-
-  // Strategy 4: Look for specific patterns like "61% in equities" in the document
-  const allocationPattern = /(\d+\.?\d*)\s*%?\s*(?:in\s+)?(?:equities|growth|stocks)/i;
-  const bondPattern = /(\d+\.?\d*)\s*%?\s*(?:in\s+)?(?:bonds|defensive|fixed)/i;
-  
-  if (growthPercent === null) {
-    const eqMatch = originalDocXml.match(allocationPattern);
-    if (eqMatch) {
-      growthPercent = parseFloat(eqMatch[1]);
-      console.log(`Found equity allocation from document pattern: ${growthPercent}%`);
-    }
-  }
-  
-  if (defensivePercent === null) {
-    const bondMatch = originalDocXml.match(bondPattern);
-    if (bondMatch) {
-      defensivePercent = parseFloat(bondMatch[1]);
-      console.log(`Found bond allocation from document pattern: ${defensivePercent}%`);
-    }
-  }
-
-  // Final calculation if we have one value
-  if (growthPercent !== null && defensivePercent === null) {
-    defensivePercent = 100 - growthPercent;
-  } else if (defensivePercent !== null && growthPercent === null) {
-    growthPercent = 100 - defensivePercent;
   }
 
   if (growthPercent !== null && defensivePercent !== null) {
@@ -668,9 +661,9 @@ async function replacePieCharts(
         
         console.log(`Image ${imageName} at position ${imagePosition}, distance from context: ${distanceFromContext}`);
         
-        // Skip images at the very start (likely logo/header area - first 3000 chars)
-        if (imagePosition < 3000) {
-          console.log(`Skipping ${imageName} - appears to be in header area`);
+        // Skip images at the very start (likely logo/header area - first 10000 chars covers most headers)
+        if (imagePosition < 10000) {
+          console.log(`Skipping ${imageName} - appears to be in header/logo area (position ${imagePosition} < 10000)`);
           continue;
         }
         
