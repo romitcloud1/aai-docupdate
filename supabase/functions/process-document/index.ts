@@ -349,43 +349,70 @@ function escapeXml(text: string): string {
     .replace(/'/g, '&apos;');
 }
 
-// Extract percentage data from document text for pie chart generation
-function extractPercentageData(documentText: string): PieChartData | null {
-  // Look for patterns like "X% growth assets" and "Y% defensive assets"
-  const growthPatterns = [
-    /(\d+\.?\d*)%\s*(?:growth|equity|equities)/gi,
-    /(?:growth|equity|equities)[:\s]*(\d+\.?\d*)%/gi,
-  ];
+// Extract percentage data from replacements for pie chart generation
+function extractPercentageDataFromReplacements(replacements: ProcessedReplacement[]): PieChartData | null {
+  // Look through the actual replacement text for percentage values
+  // This ensures we use the AI-generated values, not the original document values
   
-  const defensivePatterns = [
-    /(\d+\.?\d*)%\s*(?:defensive|bonds?|fixed)/gi,
-    /(?:defensive|bonds?|fixed)[:\s]*(\d+\.?\d*)%/gi,
-  ];
-
   let growthPercent: number | null = null;
   let defensivePercent: number | null = null;
 
-  for (const pattern of growthPatterns) {
-    const match = pattern.exec(documentText);
-    if (match) {
-      growthPercent = parseFloat(match[1]);
-      break;
-    }
-  }
+  for (const replacement of replacements) {
+    const text = replacement.newText;
+    
+    // Look for growth/equity patterns
+    const growthPatterns = [
+      /(\d+\.?\d*)\s*%?\s*(?:growth|equity|equities)/gi,
+      /(?:growth|equity|equities)[:\s]*(\d+\.?\d*)\s*%?/gi,
+      /(\d+\.?\d*)%/g, // Just percentage - will need context
+    ];
+    
+    // Look for defensive/bond patterns  
+    const defensivePatterns = [
+      /(\d+\.?\d*)\s*%?\s*(?:defensive|bonds?|fixed)/gi,
+      /(?:defensive|bonds?|fixed)[:\s]*(\d+\.?\d*)\s*%?/gi,
+    ];
 
-  for (const pattern of defensivePatterns) {
-    const match = pattern.exec(documentText);
-    if (match) {
-      defensivePercent = parseFloat(match[1]);
-      break;
+    // Check if this replacement mentions growth/equity
+    if (/growth|equity|equities/i.test(text)) {
+      for (const pattern of growthPatterns) {
+        pattern.lastIndex = 0; // Reset regex
+        const match = pattern.exec(text);
+        if (match) {
+          const val = parseFloat(match[1]);
+          if (val > 0 && val <= 100) {
+            growthPercent = val;
+            console.log(`Found growth percentage in replacement: ${val}% from "${text}"`);
+            break;
+          }
+        }
+      }
+    }
+    
+    // Check if this replacement mentions defensive/bonds
+    if (/defensive|bonds?|fixed/i.test(text)) {
+      for (const pattern of defensivePatterns) {
+        pattern.lastIndex = 0; // Reset regex
+        const match = pattern.exec(text);
+        if (match) {
+          const val = parseFloat(match[1]);
+          if (val > 0 && val <= 100) {
+            defensivePercent = val;
+            console.log(`Found defensive percentage in replacement: ${val}% from "${text}"`);
+            break;
+          }
+        }
+      }
     }
   }
 
   // If we found growth but not defensive, calculate it
   if (growthPercent !== null && defensivePercent === null) {
     defensivePercent = 100 - growthPercent;
+    console.log(`Calculated defensive: ${defensivePercent}%`);
   } else if (defensivePercent !== null && growthPercent === null) {
     growthPercent = 100 - defensivePercent;
+    console.log(`Calculated growth: ${growthPercent}%`);
   }
 
   if (growthPercent !== null && defensivePercent !== null) {
@@ -397,6 +424,7 @@ function extractPercentageData(documentText: string): PieChartData | null {
     };
   }
 
+  console.log("No percentage data found in replacements");
   return null;
 }
 
@@ -486,18 +514,19 @@ CRITICAL REQUIREMENTS:
 async function replacePieCharts(
   zip: JSZip,
   documentXml: string,
-  modifiedXml: string
+  modifiedXml: string,
+  replacements: ProcessedReplacement[]
 ): Promise<void> {
-  // Extract the new percentage data from the modified document text
-  const modifiedText = extractTextFromXml(modifiedXml);
-  const percentageData = extractPercentageData(modifiedText);
+  // Extract the new percentage data from the actual AI replacements
+  // This ensures we use the values the AI generated, not parsed document text
+  const percentageData = extractPercentageDataFromReplacements(replacements);
   
   if (!percentageData) {
-    console.log("No percentage data found for pie chart generation");
+    console.log("No percentage data found in replacements for pie chart generation");
     return;
   }
 
-  console.log(`Found percentage data: Equities ${percentageData.growthPercent}%, Bonds ${percentageData.defensivePercent}%`);
+  console.log(`Using replacement percentages: Equities ${percentageData.growthPercent}%, Bonds ${percentageData.defensivePercent}%`);
 
   // Find all images in the document
   const mediaFolder = zip.folder("word/media");
@@ -738,9 +767,9 @@ serve(async (req) => {
     const modifiedXml = replaceHighlightedText(documentXml, replacements);
     clientZip.file("word/document.xml", modifiedXml);
     
-    // Attempt to regenerate pie charts with new data
+    // Attempt to regenerate pie charts with new data from actual replacements
     console.log("Checking for pie charts to regenerate...");
-    await replacePieCharts(clientZip, documentXml, modifiedXml);
+    await replacePieCharts(clientZip, documentXml, modifiedXml, replacements);
     
     const outputBuffer = await clientZip.generateAsync({ 
       type: "arraybuffer",
