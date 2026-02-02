@@ -192,16 +192,32 @@ function replaceHighlightedText(
   let modifiedXml = documentXml;
   
   for (const replacement of replacements) {
-    // Create the new run with the same structure but new text
-    const newRun = replacement.fullMatch.replace(
+    // Escape special regex characters in the fullMatch for safe replacement
+    const escapedMatch = escapeRegExp(replacement.fullMatch);
+    
+    // Create the new run with new text AND remove highlight formatting
+    let newRun = replacement.fullMatch;
+    
+    // Replace the text content
+    newRun = newRun.replace(
       /<w:t([^>]*)>[^<]*<\/w:t>/g,
       `<w:t$1>${escapeXml(replacement.newText)}</w:t>`
     );
     
-    modifiedXml = modifiedXml.replace(replacement.fullMatch, newRun);
+    // Remove highlight formatting so the replaced text is no longer highlighted
+    newRun = newRun.replace(/<w:highlight[^>]*\/>/g, '');
+    newRun = newRun.replace(/<w:highlight[^>]*>.*?<\/w:highlight>/g, '');
+    
+    // Use regex for more reliable matching
+    const regex = new RegExp(escapedMatch, 'g');
+    modifiedXml = modifiedXml.replace(regex, newRun);
   }
   
   return modifiedXml;
+}
+
+function escapeRegExp(string: string): string {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function escapeXml(text: string): string {
@@ -324,11 +340,17 @@ serve(async (req) => {
     console.log(`Processing ${highlightedSections.length} highlighted sections in a single batch request`);
     const replacementMap = await generateAllReplacements(instructionPrompt, highlightedSections);
     
-    const replacements: ProcessedReplacement[] = highlightedSections.map((section, index) => ({
-      originalText: section.text,
-      newText: replacementMap.get(index) || section.text,
-      fullMatch: section.fullMatch
-    }));
+    console.log(`Received ${replacementMap.size} replacements from AI`);
+    
+    const replacements: ProcessedReplacement[] = highlightedSections.map((section, index) => {
+      const newText = replacementMap.get(index) || section.text;
+      console.log(`Section ${index}: "${section.text.substring(0, 30)}..." -> "${newText.substring(0, 30)}..."`);
+      return {
+        originalText: section.text,
+        newText: newText,
+        fullMatch: section.fullMatch
+      };
+    });
 
     // Create the modified document
     const modifiedXml = replaceHighlightedText(documentXml, replacements);
