@@ -71,14 +71,76 @@ function extractHighlightedSections(documentXml: string): HighlightedSection[] {
   return highlightedSections;
 }
 
-function getRealisticDataGuidelines(): string {
+async function fetchMarketData(): Promise<string> {
   const currentDate = new Date();
   const formattedDate = currentDate.toLocaleDateString('en-GB', { 
     day: 'numeric', 
     month: 'long', 
     year: 'numeric' 
   });
-  
+
+  try {
+    // Fetch UK FTSE 100 data from Yahoo Finance (free, no API key needed)
+    const ftseResponse = await fetch(
+      'https://query1.finance.yahoo.com/v8/finance/chart/%5EFTSE?interval=1d&range=1d',
+      { headers: { 'User-Agent': 'Mozilla/5.0' } }
+    );
+    
+    let ftseData = "";
+    if (ftseResponse.ok) {
+      const ftseJson = await ftseResponse.json();
+      const result = ftseJson?.chart?.result?.[0];
+      if (result) {
+        const price = result.meta?.regularMarketPrice;
+        const prevClose = result.meta?.previousClose;
+        if (price && prevClose) {
+          const changePercent = ((price - prevClose) / prevClose * 100).toFixed(2);
+          ftseData = `FTSE 100: ${price.toFixed(2)} (${changePercent}% change)`;
+        }
+      }
+    }
+
+    // Fetch S&P 500 data
+    const spyResponse = await fetch(
+      'https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=1d',
+      { headers: { 'User-Agent': 'Mozilla/5.0' } }
+    );
+    
+    let spData = "";
+    if (spyResponse.ok) {
+      const spJson = await spyResponse.json();
+      const result = spJson?.chart?.result?.[0];
+      if (result) {
+        const price = result.meta?.regularMarketPrice;
+        const prevClose = result.meta?.previousClose;
+        if (price && prevClose) {
+          const changePercent = ((price - prevClose) / prevClose * 100).toFixed(2);
+          spData = `S&P 500: ${price.toFixed(2)} (${changePercent}% change)`;
+        }
+      }
+    }
+
+    if (ftseData || spData) {
+      console.log("Market data fetched successfully:", ftseData, spData);
+      return `CURRENT DATE: ${formattedDate}
+
+LIVE MARKET DATA (use for realistic values):
+- ${ftseData || "FTSE 100: data unavailable"}
+- ${spData || "S&P 500: data unavailable"}
+- Use these market trends to inform investment performance figures
+- For UK £ amounts, use realistic variations based on current market conditions
+
+REALISTIC VALUE GUIDELINES:
+- UK Pension Values: £30,000 - £500,000 (typical range)
+- Investment Returns: 3% - 8% annually (realistic long-term)
+- Inflation Rates: 2% - 4% (typical assumption)
+- Risk-Free Rates: 4% - 5% (current UK rates)`;
+    }
+  } catch (error) {
+    console.log("Error fetching market data:", error);
+  }
+
+  // Fallback if market data unavailable
   return `CURRENT DATE: ${formattedDate}
 
 REALISTIC VALUE GUIDELINES (use these ranges for professional financial documents):
@@ -87,7 +149,6 @@ REALISTIC VALUE GUIDELINES (use these ranges for professional financial document
 - Inflation Rates: 2% - 4% (typical assumption)
 - Risk-Free Rates: 4% - 5% (current UK rates)
 - Annuity Rates: 5% - 7% (depending on age/type)
-- Transfer Values: Generate realistic figures based on context
 - Percentages: Use professional variations (e.g., 42.3% instead of round 40%)
 - Monetary amounts: Use realistic figures with appropriate precision (e.g., £43,567 not £40,000)`;
 }
@@ -373,13 +434,13 @@ serve(async (req) => {
       );
     }
 
-    // Get realistic data guidelines for AI
-    const dataGuidelines = getRealisticDataGuidelines();
-    console.log("Using realistic data guidelines for document generation");
+    // Fetch market data for realistic values
+    console.log("Fetching current market data...");
+    const marketData = await fetchMarketData();
 
     // Generate all replacements in a single batched API call
     console.log(`Processing ${highlightedSections.length} highlighted sections in a single batch request`);
-    const replacementMap = await generateAllReplacements(instructionPrompt, highlightedSections, dataGuidelines);
+    const replacementMap = await generateAllReplacements(instructionPrompt, highlightedSections, marketData);
     
     console.log(`Received ${replacementMap.size} replacements from AI`);
     
