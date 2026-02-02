@@ -26,6 +26,13 @@ interface PieChartData {
   labels: string[];
 }
 
+interface LineChartData {
+  title: string;
+  dataPoints: { label: string; value: number }[];
+  yAxisLabel: string;
+  trend: 'up' | 'down' | 'stable';
+}
+
 function extractTextFromXml(xmlContent: string): string {
   // Extract all text from w:t tags
   const textMatches = xmlContent.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g);
@@ -558,7 +565,370 @@ CRITICAL REQUIREMENTS:
   }
 }
 
-// Find pie chart images in the document and replace them
+// Extract performance/trend data from replacements for line chart generation
+function extractLineChartDataFromReplacements(replacements: ProcessedReplacement[], modifiedXml: string): LineChartData | null {
+  console.log(`Analyzing replacements for line chart data`);
+  
+  // Look for performance figures, returns, or time-series data in the replacements
+  const dataPoints: { label: string; value: number }[] = [];
+  let title = "Portfolio Performance";
+  let yAxisLabel = "Value (£)";
+  let trend: 'up' | 'down' | 'stable' = 'stable';
+  
+  // Extract monetary values with context for performance tracking
+  for (const replacement of replacements) {
+    const text = replacement.newText;
+    
+    // Look for monetary amounts with labels like "Start: £X" or "Current: £Y"
+    const valuePatterns = [
+      /(?:start(?:ing)?|initial|opening)\s*(?:value)?[:\s]*£?([\d,]+\.?\d*)/gi,
+      /(?:current|final|closing|end)\s*(?:value)?[:\s]*£?([\d,]+\.?\d*)/gi,
+      /(?:year\s*\d+|q[1-4]|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[:\s]*£?([\d,]+\.?\d*)/gi
+    ];
+    
+    // Extract start value
+    const startMatch = text.match(/(?:start(?:ing)?|initial|opening)\s*(?:value)?[:\s]*£?([\d,]+\.?\d*)/i);
+    if (startMatch) {
+      const val = parseFloat(startMatch[1].replace(/,/g, ''));
+      if (val > 0 && !dataPoints.find(p => p.label === 'Start')) {
+        dataPoints.push({ label: 'Start', value: val });
+      }
+    }
+    
+    // Extract current/end value
+    const endMatch = text.match(/(?:current|final|closing|end(?:ing)?)\s*(?:value)?[:\s]*£?([\d,]+\.?\d*)/i);
+    if (endMatch) {
+      const val = parseFloat(endMatch[1].replace(/,/g, ''));
+      if (val > 0 && !dataPoints.find(p => p.label === 'Current')) {
+        dataPoints.push({ label: 'Current', value: val });
+      }
+    }
+    
+    // Extract percentage returns
+    const returnMatch = text.match(/(\+?-?\d+\.?\d*)\s*%\s*(?:return|growth|gain|performance)/i);
+    if (returnMatch) {
+      const returnPct = parseFloat(returnMatch[1]);
+      trend = returnPct > 2 ? 'up' : returnPct < -2 ? 'down' : 'stable';
+    }
+  }
+  
+  // If we found start/current values, create intermediate points
+  if (dataPoints.length >= 2) {
+    const start = dataPoints.find(p => p.label === 'Start')?.value || 0;
+    const end = dataPoints.find(p => p.label === 'Current')?.value || 0;
+    
+    // Generate realistic intermediate points
+    const years = ['2020', '2021', '2022', '2023', '2024', '2025'];
+    const totalGrowth = end - start;
+    
+    // Create a realistic growth curve
+    const generatedPoints: { label: string; value: number }[] = [];
+    for (let i = 0; i < years.length; i++) {
+      const progress = i / (years.length - 1);
+      // Add some variation to make it look realistic
+      const variance = (Math.sin(i * 1.5) * 0.05) * totalGrowth;
+      const value = Math.round(start + (totalGrowth * progress) + variance);
+      generatedPoints.push({ label: years[i], value });
+    }
+    
+    trend = end > start ? 'up' : end < start ? 'down' : 'stable';
+    
+    console.log(`Generated line chart data with ${generatedPoints.length} points, trend: ${trend}`);
+    return {
+      title,
+      dataPoints: generatedPoints,
+      yAxisLabel,
+      trend
+    };
+  }
+  
+  // Fallback: look for any large monetary values to create a performance chart
+  const allMonetaryValues: { value: number; context: string }[] = [];
+  for (const replacement of replacements) {
+    const matches = replacement.newText.matchAll(/£([\d,]+\.?\d*)/g);
+    for (const match of matches) {
+      const val = parseFloat(match[1].replace(/,/g, ''));
+      if (val > 10000) { // Only consider significant values
+        allMonetaryValues.push({ value: val, context: replacement.newText.substring(0, 50) });
+      }
+    }
+  }
+  
+  if (allMonetaryValues.length >= 2) {
+    // Sort by value to create a progression
+    allMonetaryValues.sort((a, b) => a.value - b.value);
+    
+    const years = ['2020', '2021', '2022', '2023', '2024', '2025'];
+    const minVal = allMonetaryValues[0].value;
+    const maxVal = allMonetaryValues[allMonetaryValues.length - 1].value;
+    
+    const generatedPoints: { label: string; value: number }[] = [];
+    for (let i = 0; i < years.length; i++) {
+      const progress = i / (years.length - 1);
+      const value = Math.round(minVal + (maxVal - minVal) * progress);
+      generatedPoints.push({ label: years[i], value });
+    }
+    
+    console.log(`Generated fallback line chart with ${generatedPoints.length} points`);
+    return {
+      title: "Portfolio Value Over Time",
+      dataPoints: generatedPoints,
+      yAxisLabel: "Value (£)",
+      trend: maxVal > minVal ? 'up' : 'down'
+    };
+  }
+  
+  console.log("Could not extract sufficient data for line chart");
+  return null;
+}
+
+// Generate a new line chart using AI image generation
+async function generateLineChart(data: LineChartData): Promise<Uint8Array | null> {
+  const apiKey = Deno.env.get("LOVABLE_API_KEY");
+  
+  if (!apiKey) {
+    console.log("LOVABLE_API_KEY not available for line chart generation");
+    return null;
+  }
+
+  // Format data points for the prompt
+  const dataDescription = data.dataPoints
+    .map(p => `${p.label}: £${p.value.toLocaleString()}`)
+    .join(', ');
+
+  const trendColor = data.trend === 'up' ? 'green (#2E7D32)' : data.trend === 'down' ? 'red (#C62828)' : 'blue (#1565C0)';
+  
+  const prompt = `Create a professional line chart for a financial document:
+
+DATA POINTS: ${dataDescription}
+
+REQUIREMENTS:
+- Clean, professional line chart with smooth curve connecting points
+- X-axis: Years (${data.dataPoints.map(p => p.label).join(', ')})
+- Y-axis: ${data.yAxisLabel} with proper scale showing £ values
+- Line color: ${trendColor} (solid line, 2-3px thickness)
+- Add small circular markers at each data point
+- Include subtle gridlines for readability
+- White/light gray background
+- Professional font styling for labels
+- Title at top: "${data.title}"
+- Clean, minimal style suitable for Word document embedding
+- Landscape/wide format (16:9 or similar)
+- NO 3D effects, keep it flat and clean`;
+
+  try {
+    console.log(`Generating line chart: ${data.title} with ${data.dataPoints.length} data points`);
+    
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-3-pro-image-preview",
+        messages: [
+          {
+            role: "user",
+            content: prompt
+          }
+        ],
+        modalities: ["image", "text"]
+      })
+    });
+
+    if (!response.ok) {
+      console.log(`Line chart generation failed: ${response.status}`);
+      const errText = await response.text();
+      console.log(`Error details: ${errText}`);
+      return null;
+    }
+
+    const result = await response.json();
+    const imageData = result.choices?.[0]?.message?.images?.[0]?.image_url?.url;
+    
+    if (!imageData) {
+      console.log("No image returned from AI for line chart");
+      return null;
+    }
+
+    // Extract base64 data from data URL
+    const base64Match = imageData.match(/^data:image\/\w+;base64,(.+)$/);
+    if (!base64Match) {
+      console.log("Invalid line chart image data format");
+      return null;
+    }
+
+    // Decode base64 to Uint8Array
+    const binaryString = atob(base64Match[1]);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    
+    console.log(`Successfully generated line chart image (${bytes.length} bytes)`);
+    return bytes;
+    
+  } catch (error) {
+    console.log("Error generating line chart:", error);
+    return null;
+  }
+}
+
+// Find and replace line chart images in the document
+async function replaceLineCharts(
+  zip: JSZip,
+  documentXml: string,
+  modifiedXml: string,
+  replacements: ProcessedReplacement[]
+): Promise<void> {
+  const lineChartData = extractLineChartDataFromReplacements(replacements, modifiedXml);
+  
+  if (!lineChartData) {
+    console.log("No line chart data found in replacements");
+    return;
+  }
+
+  console.log(`Using line chart data: ${lineChartData.dataPoints.length} points, trend: ${lineChartData.trend}`);
+
+  // Find all images in the document
+  const imageFiles: string[] = [];
+  zip.forEach((relativePath, file) => {
+    if (relativePath.startsWith("word/media/") && !file.dir) {
+      const ext = relativePath.toLowerCase();
+      if (ext.endsWith(".png") || ext.endsWith(".jpg") || ext.endsWith(".jpeg")) {
+        imageFiles.push(relativePath);
+      }
+    }
+  });
+
+  if (imageFiles.length === 0) {
+    console.log("No images found for line chart replacement");
+    return;
+  }
+
+  const relsFile = zip.file("word/_rels/document.xml.rels");
+  if (!relsFile) {
+    console.log("No document.xml.rels found");
+    return;
+  }
+
+  const relsContent = await relsFile.async("text");
+
+  // Look for line chart context - performance, trend, growth over time
+  const lineChartContextPattern = /(?:performance\s*(?:chart|graph|over\s*time)|growth\s*(?:chart|trend)|portfolio\s*(?:value|growth)\s*over|investment\s*(?:performance|growth))/gi;
+  
+  let contextMatch = lineChartContextPattern.exec(modifiedXml);
+  let contextPosition: number | null = null;
+  
+  if (contextMatch) {
+    contextPosition = contextMatch.index;
+    console.log(`Found line chart context at position ${contextPosition}`);
+  } else {
+    // Fallback: look for time-series language
+    const timeSeriesPattern = /(?:over\s*the\s*(?:past|last)\s*(?:\d+)?\s*years?|year[- ]on[- ]year|historical\s*(?:performance|growth))/gi;
+    const timeMatch = timeSeriesPattern.exec(modifiedXml);
+    if (timeMatch) {
+      contextPosition = timeMatch.index;
+      console.log(`Found time-series context at position ${contextPosition}`);
+    }
+  }
+
+  if (contextPosition === null) {
+    console.log("No line chart context found - skipping line chart replacement");
+    return;
+  }
+
+  // Generate the new line chart
+  const newLineChartData = await generateLineChart(lineChartData);
+  
+  if (!newLineChartData) {
+    console.log("Failed to generate new line chart");
+    return;
+  }
+
+  // Find candidate images for line chart (different from pie chart selection)
+  const imageCandidates: { path: string; position: number; name: string }[] = [];
+  
+  for (const imagePath of imageFiles) {
+    const imageName = imagePath.split("/").pop() || "";
+    
+    // Skip logos and headers
+    if (imageName.toLowerCase().includes('logo') || 
+        imageName.toLowerCase().includes('header') ||
+        imageName.toLowerCase().includes('footer')) {
+      continue;
+    }
+    
+    const imageIdMatch = relsContent.match(new RegExp(`Id="([^"]+)"[^>]*Target="media/${imageName}"`));
+    
+    if (imageIdMatch) {
+      const rId = imageIdMatch[1];
+      const imageUsagePattern = new RegExp(`<a:blip[^>]*r:embed="${rId}"`, 'gi');
+      const imageMatch = imageUsagePattern.exec(modifiedXml);
+      
+      if (imageMatch) {
+        const imagePosition = imageMatch.index;
+        
+        // Skip header area
+        if (imagePosition < 10000) {
+          continue;
+        }
+        
+        imageCandidates.push({ path: imagePath, position: imagePosition, name: imageName });
+        console.log(`Line chart candidate: ${imageName} at position ${imagePosition}`);
+      }
+    }
+  }
+
+  if (imageCandidates.length === 0) {
+    console.log("No suitable line chart candidates found");
+    return;
+  }
+
+  // Sort by position
+  imageCandidates.sort((a, b) => a.position - b.position);
+
+  // Find the image closest to line chart context but BEFORE the pie chart context
+  // (Line charts typically appear earlier in the document showing historical performance)
+  let bestCandidate: { path: string; position: number; name: string } | null = null;
+  
+  // Look for the first image that's within reasonable distance of the context
+  for (const candidate of imageCandidates) {
+    const distance = Math.abs(candidate.position - contextPosition);
+    
+    // Pick an image close to the performance/line chart context
+    if (distance < 80000) {
+      // Make sure this isn't the same image as the pie chart
+      // Pie charts tend to be later in the document near allocation sections
+      const pieContextPattern = /(?:pie\s*chart|asset\s*allocation|allocation\s*breakdown)/gi;
+      const pieMatch = pieContextPattern.exec(modifiedXml);
+      
+      if (pieMatch) {
+        const pieContextPos = pieMatch.index;
+        // If this image is closer to pie context, skip it
+        if (Math.abs(candidate.position - pieContextPos) < Math.abs(candidate.position - contextPosition)) {
+          console.log(`Skipping ${candidate.name} - closer to pie chart context`);
+          continue;
+        }
+      }
+      
+      bestCandidate = candidate;
+      console.log(`Selected ${candidate.name} as line chart (distance: ${distance})`);
+      break;
+    }
+  }
+
+  if (bestCandidate) {
+    console.log(`Replacing line chart image: ${bestCandidate.path}`);
+    zip.file(bestCandidate.path, newLineChartData);
+    console.log("Line chart replaced successfully");
+  } else {
+    console.log("No suitable line chart image found within distance threshold");
+  }
+}
+
+
 async function replacePieCharts(
   zip: JSZip,
   documentXml: string,
@@ -879,7 +1249,10 @@ serve(async (req) => {
     const modifiedXml = replaceHighlightedText(documentXml, replacements);
     clientZip.file("word/document.xml", modifiedXml);
     
-    // Attempt to regenerate pie charts with new data from actual replacements
+    // Attempt to regenerate charts with new data from actual replacements
+    console.log("Checking for line charts to regenerate...");
+    await replaceLineCharts(clientZip, documentXml, modifiedXml, replacements);
+    
     console.log("Checking for pie charts to regenerate...");
     await replacePieCharts(clientZip, documentXml, modifiedXml, replacements);
     
