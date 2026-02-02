@@ -71,11 +71,10 @@ function extractHighlightedSections(documentXml: string): HighlightedSection[] {
   return highlightedSections;
 }
 
-async function generateReplacementText(
+async function generateAllReplacements(
   instructionPrompt: string,
-  highlightedText: string,
-  context: string
-): Promise<string> {
+  sections: HighlightedSection[]
+): Promise<Map<number, string>> {
   const apiKey = Deno.env.get("LOVABLE_API_KEY");
   
   if (!apiKey) {
@@ -83,7 +82,12 @@ async function generateReplacementText(
   }
 
   const maxRetries = 5;
-  const baseDelay = 2000; // Start with 2 seconds
+  const baseDelay = 2000;
+
+  // Build a single prompt with all sections
+  const sectionsText = sections.map((s, i) => 
+    `[Section ${i + 1}]\nContext: ${s.context}\nHighlighted text to replace: "${s.text}"`
+  ).join("\n\n");
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -97,44 +101,72 @@ async function generateReplacementText(
         messages: [
           {
             role: "system",
-            content: `You are a professional document editor. Your task is to replace highlighted placeholder text in documents based on specific instructions.
+            content: `You are a professional document editor. Replace highlighted placeholder text based on instructions.
 
-CRITICAL RULES:
-1. Generate ONLY the replacement text - no explanations, no quotes, no formatting markers
-2. Match the tone and style of the surrounding document
-3. Generate realistic, professional content
-4. If authorship, preparer, reviewer, or employee context is implied, use "Romit Acharya"
-5. Do NOT change client names, beneficiary names, or third-party individuals if they appear in context
-6. For numeric or financial values, generate reasonable professional estimates
-7. Keep the same approximate length as the original placeholder unless the instruction requires more detail`
+RULES:
+1. Generate ONLY replacement text - no explanations or formatting markers
+2. Match tone and style of surrounding document
+3. Use "Romit Acharya" for authorship/preparer/reviewer roles
+4. Do NOT change client/beneficiary/third-party names
+5. Generate reasonable professional estimates for numeric values
+6. Keep similar length unless more detail is needed`
           },
           {
             role: "user",
-            content: `INSTRUCTION PROMPT:
-${instructionPrompt}
-
-DOCUMENT CONTEXT:
-${context}
-
-HIGHLIGHTED TEXT TO REPLACE:
-"${highlightedText}"
-
-Generate the replacement text now:`
+            content: `INSTRUCTION PROMPT:\n${instructionPrompt}\n\nSECTIONS TO REPLACE:\n${sectionsText}\n\nProvide replacements for all sections.`
           }
         ],
-        temperature: 0.7,
-        max_tokens: 500
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "provide_replacements",
+              description: "Provide replacement text for each highlighted section",
+              parameters: {
+                type: "object",
+                properties: {
+                  replacements: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        section_number: { type: "number", description: "The section number (1-indexed)" },
+                        replacement_text: { type: "string", description: "The replacement text" }
+                      },
+                      required: ["section_number", "replacement_text"]
+                    }
+                  }
+                },
+                required: ["replacements"]
+              }
+            }
+          }
+        ],
+        tool_choice: { type: "function", function: { name: "provide_replacements" } },
+        temperature: 0.7
       })
     });
 
     if (response.ok) {
       const data = await response.json();
-      return data.choices[0]?.message?.content?.trim() || highlightedText;
+      const toolCall = data.choices[0]?.message?.tool_calls?.[0];
+      
+      if (toolCall?.function?.arguments) {
+        const parsed = JSON.parse(toolCall.function.arguments);
+        const resultMap = new Map<number, string>();
+        
+        for (const r of parsed.replacements) {
+          resultMap.set(r.section_number - 1, r.replacement_text); // Convert to 0-indexed
+        }
+        
+        return resultMap;
+      }
+      throw new Error("Invalid AI response format");
     }
 
     if (response.status === 429) {
       if (attempt < maxRetries - 1) {
-        const delay = baseDelay * Math.pow(2, attempt); // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+        const delay = baseDelay * Math.pow(2, attempt);
         console.log(`Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
@@ -288,22 +320,15 @@ serve(async (req) => {
       );
     }
 
-    // Generate replacements for each highlighted section
-    const replacements: ProcessedReplacement[] = [];
+    // Generate all replacements in a single batched API call
+    console.log(`Processing ${highlightedSections.length} highlighted sections in a single batch request`);
+    const replacementMap = await generateAllReplacements(instructionPrompt, highlightedSections);
     
-    for (const section of highlightedSections) {
-      const newText = await generateReplacementText(
-        instructionPrompt,
-        section.text,
-        section.context
-      );
-      
-      replacements.push({
-        originalText: section.text,
-        newText,
-        fullMatch: section.fullMatch
-      });
-    }
+    const replacements: ProcessedReplacement[] = highlightedSections.map((section, index) => ({
+      originalText: section.text,
+      newText: replacementMap.get(index) || section.text,
+      fullMatch: section.fullMatch
+    }));
 
     // Create the modified document
     const modifiedXml = replaceHighlightedText(documentXml, replacements);
