@@ -101,19 +101,27 @@ async function generateAllReplacements(
         messages: [
           {
             role: "system",
-            content: `You are a professional document editor. Replace highlighted placeholder text based on instructions.
+            content: `You are a professional document editor replacing placeholder text in financial documents.
 
-RULES:
-1. Generate ONLY replacement text - no explanations or formatting markers
-2. Match tone and style of surrounding document
-3. Use "Romit Acharya" for authorship/preparer/reviewer roles
-4. Do NOT change client/beneficiary/third-party names
-5. Generate reasonable professional estimates for numeric values
-6. Keep similar length unless more detail is needed`
+CRITICAL RULES:
+1. You MUST generate NEW replacement text for EVERY section - NEVER return the original text unchanged
+2. For author/preparer/reviewer names: ALWAYS use "Romit Acharya"
+3. For numeric values (amounts, percentages): Generate realistic professional estimates appropriate for financial documents
+4. For dates: Use current/recent dates as appropriate
+5. Match the professional tone and style of the document context
+6. Do NOT change client names, beneficiary names, or company names mentioned
+7. Keep the replacement similar in length unless more detail improves clarity
+
+EXAMPLES:
+- "Roshan" → "Romit Acharya"
+- "Prepared by [Name]" → "Prepared by Romit Acharya"
+- "40%" → "42%" (generate a realistic variation)
+- "£40,233" → "£43,500" (generate a realistic amount)
+- "[Date]" → "15th January 2024"`
           },
           {
             role: "user",
-            content: `INSTRUCTION PROMPT:\n${instructionPrompt}\n\nSECTIONS TO REPLACE:\n${sectionsText}\n\nProvide replacements for all sections.`
+            content: `DOCUMENT CONTEXT AND INSTRUCTIONS:\n${instructionPrompt}\n\nHIGHLIGHTED SECTIONS REQUIRING REPLACEMENT:\n${sectionsText}\n\nIMPORTANT: You MUST provide a NEW, DIFFERENT replacement for each section. Do not return the original text.`
           }
         ],
         tools: [
@@ -121,17 +129,18 @@ RULES:
             type: "function",
             function: {
               name: "provide_replacements",
-              description: "Provide replacement text for each highlighted section",
+              description: "Provide NEW replacement text for each highlighted section. Every replacement MUST be different from the original.",
               parameters: {
                 type: "object",
                 properties: {
                   replacements: {
                     type: "array",
+                    description: "Array of replacements, one for each section",
                     items: {
                       type: "object",
                       properties: {
                         section_number: { type: "number", description: "The section number (1-indexed)" },
-                        replacement_text: { type: "string", description: "The replacement text" }
+                        replacement_text: { type: "string", description: "The NEW replacement text - must be different from original" }
                       },
                       required: ["section_number", "replacement_text"]
                     }
@@ -143,7 +152,7 @@ RULES:
           }
         ],
         tool_choice: { type: "function", function: { name: "provide_replacements" } },
-        temperature: 0.7
+        temperature: 0.8
       })
     });
 
