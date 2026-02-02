@@ -161,9 +161,10 @@ REALISTIC VALUE GUIDELINES (use these ranges for professional financial document
 - Monetary amounts: Use realistic figures with appropriate precision (e.g., £43,567 not £40,000)`;
 }
 
-async function generateAllReplacements(
+async function generateBatchReplacements(
   instructionPrompt: string,
   sections: HighlightedSection[],
+  startIndex: number,
   marketData: string
 ): Promise<Map<number, string>> {
   const apiKey = Deno.env.get("LOVABLE_API_KEY");
@@ -175,9 +176,9 @@ async function generateAllReplacements(
   const maxRetries = 5;
   const baseDelay = 2000;
 
-  // Build a single prompt with all sections
+  // Build prompt with batch sections (using global indices)
   const sectionsText = sections.map((s, i) => 
-    `[Section ${i + 1}]\nContext: ${s.context}\nHighlighted text to replace: "${s.text}"`
+    `[Section ${startIndex + i + 1}]\nContext: ${s.context}\nHighlighted text to replace: "${s.text}"`
   ).join("\n\n");
 
   const marketContext = marketData ? `\n\n${marketData}` : "";
@@ -265,7 +266,9 @@ EXAMPLES:
         const resultMap = new Map<number, string>();
         
         for (const r of parsed.replacements) {
-          resultMap.set(r.section_number - 1, r.replacement_text); // Convert to 0-indexed
+          // Convert back to global 0-indexed
+          const globalIndex = r.section_number - 1;
+          resultMap.set(globalIndex, r.replacement_text);
         }
         
         return resultMap;
@@ -284,7 +287,13 @@ EXAMPLES:
     }
 
     if (response.status === 402) {
-      throw new Error("AI service credits exhausted. Please try again later.");
+      if (attempt < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.log(`Credits/quota issue, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw new Error("AI service temporarily unavailable. Please try again in a few minutes.");
     }
 
     const errorText = await response.text();
@@ -292,6 +301,47 @@ EXAMPLES:
   }
 
   throw new Error("Max retries exceeded");
+}
+
+async function generateAllReplacements(
+  instructionPrompt: string,
+  sections: HighlightedSection[],
+  marketData: string
+): Promise<Map<number, string>> {
+  const BATCH_SIZE = 50; // Process 50 sections at a time to avoid token limits
+  const allReplacements = new Map<number, string>();
+  
+  const totalBatches = Math.ceil(sections.length / BATCH_SIZE);
+  console.log(`Processing ${sections.length} sections in ${totalBatches} batches of up to ${BATCH_SIZE}`);
+  
+  for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+    const startIdx = batchIndex * BATCH_SIZE;
+    const endIdx = Math.min(startIdx + BATCH_SIZE, sections.length);
+    const batchSections = sections.slice(startIdx, endIdx);
+    
+    console.log(`Processing batch ${batchIndex + 1}/${totalBatches} (sections ${startIdx + 1}-${endIdx})`);
+    
+    const batchReplacements = await generateBatchReplacements(
+      instructionPrompt,
+      batchSections,
+      startIdx,
+      marketData
+    );
+    
+    // Merge batch results into main map
+    for (const [index, text] of batchReplacements) {
+      allReplacements.set(index, text);
+    }
+    
+    // Add a small delay between batches to avoid rate limiting
+    if (batchIndex < totalBatches - 1) {
+      console.log("Waiting 1s before next batch...");
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+  
+  console.log(`Generated ${allReplacements.size} replacements total`);
+  return allReplacements;
 }
 
 function replaceHighlightedText(
