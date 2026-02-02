@@ -378,6 +378,10 @@ serve(async (req) => {
     const instructionXmlContent = await instructionDocXml.async("text");
     const instructionPrompt = extractTextFromXml(instructionXmlContent);
 
+    console.log("=== EXTRACTED INSTRUCTION PROMPT ===");
+    console.log(instructionPrompt);
+    console.log("=== END INSTRUCTION PROMPT ===");
+
     if (!instructionPrompt) {
       return new Response(
         JSON.stringify({ error: "Could not extract text from instruction prompt file" }),
