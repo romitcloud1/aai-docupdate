@@ -197,23 +197,30 @@ async function generateAllReplacements(
 
 CRITICAL RULES:
 1. You MUST generate NEW replacement text for EVERY section - NEVER return the original text unchanged
-2. For author/preparer/reviewer names: ALWAYS use "Romit Acharya"
+2. For author/preparer/reviewer names in signature sections: ALWAYS use "Romit Acharya"
 3. For numeric values (amounts, percentages): Generate realistic professional estimates appropriate for financial documents
-4. For dates: Use current/recent dates as appropriate
+4. For dates: Use CURRENT date from the market data provided (today's date)
 5. Match the professional tone and style of the document context
-6. Do NOT change client names, beneficiary names, or company names mentioned
-7. Keep the replacement similar in length unless more detail improves clarity
+6. ABSOLUTELY PRESERVE client names, beneficiary names, customer names - these are the people RECEIVING the document, not the authors
+7. In "Client Declaration" or signature sections, the CLIENT NAME must stay as the original name - only replace the ADVISER/PREPARER name with "Romit Acharya"
+8. Keep the replacement similar in length unless more detail improves clarity
+9. For URLs/hyperlinks: Keep them clean without special XML characters - return plain URLs
 
 EXAMPLES:
-- "Roshan" → "Romit Acharya"
-- "Prepared by [Name]" → "Prepared by Romit Acharya"
+- "Prepared by [Name]" → "Prepared by Romit Acharya" (this is the preparer/adviser)
+- "Client: [Name]" → Keep the original client name unchanged
+- "Reviewed by Roshan" → "Reviewed by Romit Acharya"
 - "40%" → "42%" (generate a realistic variation)
 - "£40,233" → "£43,500" (generate a realistic amount)
-- "[Date]" → "15th January 2024"`
+- For dates: Use the CURRENT DATE from market data (not hardcoded old dates)`
           },
         {
             role: "user",
-            content: `DOCUMENT CONTEXT AND INSTRUCTIONS:\n${instructionPrompt}${marketContext}\n\nHIGHLIGHTED SECTIONS REQUIRING REPLACEMENT:\n${sectionsText}\n\nIMPORTANT: You MUST provide a NEW, DIFFERENT replacement for each section. Do not return the original text.`
+            content: `DOCUMENT CONTEXT AND INSTRUCTIONS:\n${instructionPrompt}${marketContext}\n\nHIGHLIGHTED SECTIONS REQUIRING REPLACEMENT:\n${sectionsText}\n\nIMPORTANT: 
+- You MUST provide a NEW, DIFFERENT replacement for each section. Do not return the original text.
+- PRESERVE all client/customer names - only change author/preparer/adviser names to "Romit Acharya"
+- Use TODAY'S DATE for any date replacements (see market data for current date)
+- Keep URLs clean and plain without XML encoding`
           }
         ],
         tools: [
@@ -322,6 +329,18 @@ function escapeRegExp(string: string): string {
 }
 
 function escapeXml(text: string): string {
+  // Check if text looks like a URL - if so, only escape the minimum required
+  const isUrl = /^https?:\/\//.test(text.trim());
+  
+  if (isUrl) {
+    // For URLs, only escape < and > which would break XML structure
+    // Keep & as-is since URLs commonly contain them for query params
+    return text
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+  
+  // For regular text, do full XML escaping
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -510,11 +529,9 @@ async function replacePieCharts(
     return;
   }
 
-  // For now, we'll look for images that might be pie charts based on naming or position
-  // A more sophisticated approach would analyze the image content
-  // We'll replace the first suitable image found (typically pie charts are named image1, image2, etc.)
+  // More selective pie chart detection - avoid replacing logos
+  // Look for images that appear NEAR percentage/allocation text in the document
   
-  // Check document.xml.rels to find which image is used where
   const relsFile = zip.file("word/_rels/document.xml.rels");
   if (!relsFile) {
     console.log("No document.xml.rels found");
@@ -523,24 +540,54 @@ async function replacePieCharts(
 
   const relsContent = await relsFile.async("text");
   
-  // Find images that are likely pie charts (we'll use a simple heuristic)
-  // Look for image references near percentage text in the XML
+  // Pattern to detect text near pie charts - look for allocation/investment language
+  const pieChartContextPattern = /(?:asset\s*allocation|investment\s*mix|portfolio\s*breakdown|equities.*bonds|growth.*defensive|\d+\.?\d*%\s*(?:equities|bonds|growth|defensive))/gi;
+  
+  // Find the approximate position of pie chart context in the document
+  const contextMatch = pieChartContextPattern.exec(modifiedXml);
+  if (!contextMatch) {
+    console.log("No pie chart context found in document - skipping image replacement to preserve logos");
+    return;
+  }
+  
+  const contextPosition = contextMatch.index;
+  console.log(`Found pie chart context at position ${contextPosition}`);
+  
+  // Find images that appear near this context (within ~5000 chars)
   for (const imagePath of imageFiles) {
     const imageName = imagePath.split("/").pop();
     
-    // Check if this image reference appears near percentage data in the document
-    const imageId = relsContent.match(new RegExp(`Id="([^"]+)"[^>]*Target="media/${imageName}"`));
+    // Skip images that are likely logos (often named logo, header, or appear very early in doc)
+    if (imageName?.toLowerCase().includes('logo') || 
+        imageName?.toLowerCase().includes('header') ||
+        imageName?.toLowerCase().includes('footer')) {
+      console.log(`Skipping likely logo/header image: ${imagePath}`);
+      continue;
+    }
     
-    if (imageId) {
-      const rId = imageId[1];
-      // Check if this rId appears in the document near percentage patterns
-      const imageUsagePattern = new RegExp(`<a:blip[^>]*r:embed="${rId}"`, 'i');
+    const imageIdMatch = relsContent.match(new RegExp(`Id="([^"]+)"[^>]*Target="media/${imageName}"`));
+    
+    if (imageIdMatch) {
+      const rId = imageIdMatch[1];
+      const imageUsagePattern = new RegExp(`<a:blip[^>]*r:embed="${rId}"`, 'gi');
+      const imageMatch = imageUsagePattern.exec(modifiedXml);
       
-      if (imageUsagePattern.test(documentXml)) {
-        console.log(`Replacing potential pie chart: ${imagePath}`);
-        zip.file(imagePath, newPieChartData);
-        console.log("Pie chart replaced successfully");
-        break; // Only replace first pie chart found
+      if (imageMatch) {
+        const imagePosition = imageMatch.index;
+        const distanceFromContext = Math.abs(imagePosition - contextPosition);
+        
+        console.log(`Image ${imageName} at position ${imagePosition}, distance from context: ${distanceFromContext}`);
+        
+        // Only replace if image is within reasonable distance of pie chart context
+        // and not at the very start of document (likely header/logo area)
+        if (distanceFromContext < 10000 && imagePosition > 5000) {
+          console.log(`Replacing pie chart image: ${imagePath}`);
+          zip.file(imagePath, newPieChartData);
+          console.log("Pie chart replaced successfully");
+          break;
+        } else {
+          console.log(`Skipping image ${imageName} - too far from context or in header area`);
+        }
       }
     }
   }
