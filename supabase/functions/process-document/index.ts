@@ -167,8 +167,11 @@ serve(async (req) => {
 
   try {
     const formData = await req.formData();
-    const instructionFile = formData.get("instructionPrompt") as File;
-    const clientDataFile = formData.get("clientData") as File;
+    const instructionFile = formData.get("instructionPrompt");
+    const clientDataFile = formData.get("clientData");
+
+    console.log("Received instructionPrompt type:", typeof instructionFile, instructionFile?.constructor?.name);
+    console.log("Received clientData type:", typeof clientDataFile, clientDataFile?.constructor?.name);
 
     if (!instructionFile || !clientDataFile) {
       return new Response(
@@ -177,8 +180,58 @@ serve(async (req) => {
       );
     }
 
+    // Handle file data - FormData returns File/Blob objects
+    let instructionBuffer: ArrayBuffer;
+    let clientBuffer: ArrayBuffer;
+
+    // Type guard using duck typing for File/Blob
+    const isFileOrBlob = (value: unknown): value is { arrayBuffer: () => Promise<ArrayBuffer> } => {
+      return value !== null && typeof value === 'object' && 'arrayBuffer' in value;
+    };
+
+    if (isFileOrBlob(instructionFile)) {
+      instructionBuffer = await instructionFile.arrayBuffer();
+    } else {
+      return new Response(
+        JSON.stringify({ error: "Instruction prompt must be a file" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (isFileOrBlob(clientDataFile)) {
+      clientBuffer = await clientDataFile.arrayBuffer();
+    } else {
+      return new Response(
+        JSON.stringify({ error: "Client data must be a file" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log("Instruction buffer size:", instructionBuffer.byteLength);
+    console.log("Client buffer size:", clientBuffer.byteLength);
+
+    // Verify the files start with PK (zip signature)
+    const instructionView = new Uint8Array(instructionBuffer);
+    const clientView = new Uint8Array(clientBuffer);
+    
+    console.log("Instruction file header:", instructionView[0], instructionView[1], instructionView[2], instructionView[3]);
+    console.log("Client file header:", clientView[0], clientView[1], clientView[2], clientView[3]);
+
+    if (instructionView[0] !== 0x50 || instructionView[1] !== 0x4B) {
+      return new Response(
+        JSON.stringify({ error: "Instruction file is not a valid .docx file (must be a ZIP archive)" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (clientView[0] !== 0x50 || clientView[1] !== 0x4B) {
+      return new Response(
+        JSON.stringify({ error: "Client data file is not a valid .docx file (must be a ZIP archive)" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     // Extract instruction prompt text from the docx
-    const instructionBuffer = await instructionFile.arrayBuffer();
     const instructionZip = await JSZip.loadAsync(instructionBuffer);
     const instructionDocXml = instructionZip.file("word/document.xml");
     
@@ -197,7 +250,6 @@ serve(async (req) => {
     }
 
     // Process client data file
-    const clientBuffer = await clientDataFile.arrayBuffer();
     const clientZip = await JSZip.loadAsync(clientBuffer);
     const clientDocXml = clientZip.file("word/document.xml");
     
