@@ -352,91 +352,66 @@ function escapeXml(text: string): string {
 
 // Extract percentage data from replacements for pie chart generation
 function extractPercentageDataFromReplacements(replacements: ProcessedReplacement[], originalDocXml: string): PieChartData | null {
-  // Strategy: Look at the CONTEXT of what was being replaced to understand what the value represents
-  // The replacement text might just be "54.2%" but the original context tells us if it's growth or defensive
+  console.log(`Analyzing ${replacements.length} replacements for percentage data`);
   
   let growthPercent: number | null = null;
   let defensivePercent: number | null = null;
 
-  // First, collect all percentage replacements with their context
-  const percentageReplacements: { value: number; originalContext: string; newText: string }[] = [];
+  // Collect all percentage values from replacements
+  const allPercentages: { value: number; newText: string; originalText: string }[] = [];
   
   for (const replacement of replacements) {
-    // Extract percentage from the NEW text
-    const percentMatch = replacement.newText.match(/(\d+\.?\d*)\s*%?/);
-    if (percentMatch) {
-      const val = parseFloat(percentMatch[1]);
-      if (val > 0 && val <= 100) {
-        // Get surrounding context from the original document to understand what this percentage represents
-        const originalText = replacement.originalText;
-        const position = originalDocXml.indexOf(originalText);
-        let context = "";
-        if (position !== -1) {
-          // Get 200 chars before and after for context
-          const start = Math.max(0, position - 200);
-          const end = Math.min(originalDocXml.length, position + originalText.length + 200);
-          context = originalDocXml.substring(start, end).toLowerCase();
-        }
-        
-        percentageReplacements.push({
-          value: val,
-          originalContext: context,
-          newText: replacement.newText
-        });
-      }
-    }
-  }
-
-  console.log(`Found ${percentageReplacements.length} percentage replacements`);
-
-  // Now identify which percentage is growth (equity) and which is defensive (bonds)
-  for (const pct of percentageReplacements) {
-    const ctx = pct.originalContext;
-    
-    // Check for growth/equity indicators in context
-    if (/growth|equity|equities|stock|shares/i.test(ctx)) {
-      if (growthPercent === null) {
-        growthPercent = pct.value;
-        console.log(`Identified growth percentage: ${pct.value}% from context containing growth/equity keywords`);
-      }
-    }
-    
-    // Check for defensive/bond indicators in context
-    if (/defensive|bond|fixed\s*income|gilts|cash/i.test(ctx)) {
-      if (defensivePercent === null) {
-        defensivePercent = pct.value;
-        console.log(`Identified defensive percentage: ${pct.value}% from context containing defensive/bond keywords`);
-      }
-    }
-  }
-
-  // If we still haven't found both, look for pairs that add up to ~100%
-  if (growthPercent === null || defensivePercent === null) {
-    for (let i = 0; i < percentageReplacements.length; i++) {
-      for (let j = i + 1; j < percentageReplacements.length; j++) {
-        const sum = percentageReplacements[i].value + percentageReplacements[j].value;
-        if (Math.abs(sum - 100) < 1) { // Allow for rounding
-          // Found a pair that adds to 100%
-          const val1 = percentageReplacements[i].value;
-          const val2 = percentageReplacements[j].value;
-          
-          // The larger one is typically equities/growth in balanced portfolios
-          if (val1 > val2) {
-            growthPercent = val1;
-            defensivePercent = val2;
-          } else {
-            growthPercent = val2;
-            defensivePercent = val1;
-          }
-          console.log(`Found complementary pair: ${growthPercent}% + ${defensivePercent}% = ${sum}%`);
-          break;
+    // Look for percentage patterns in the new text
+    const percentMatches = replacement.newText.match(/(\d+\.?\d*)\s*%/g);
+    if (percentMatches) {
+      for (const match of percentMatches) {
+        const val = parseFloat(match);
+        if (val > 0 && val <= 100) {
+          allPercentages.push({
+            value: val,
+            newText: replacement.newText,
+            originalText: replacement.originalText
+          });
         }
       }
-      if (growthPercent !== null && defensivePercent !== null) break;
     }
   }
 
-  // If we found growth but not defensive, calculate it
+  console.log(`Found ${allPercentages.length} percentage values in replacements`);
+  
+  // Log all found percentages for debugging
+  for (const p of allPercentages) {
+    console.log(`  Percentage: ${p.value}% from "${p.newText.substring(0, 30)}..."`);
+  }
+
+  // Strategy 1: Look for percentages near equity/growth or bond/defensive keywords in the original context
+  for (const pct of allPercentages) {
+    // Get context around the original text in the document
+    const originalPos = originalDocXml.indexOf(pct.originalText);
+    if (originalPos !== -1) {
+      const start = Math.max(0, originalPos - 300);
+      const end = Math.min(originalDocXml.length, originalPos + 300);
+      const context = originalDocXml.substring(start, end).toLowerCase();
+      
+      // Check for growth/equity keywords
+      if (/growth|equity|equities|stock|shares|risk/i.test(context)) {
+        if (growthPercent === null) {
+          growthPercent = pct.value;
+          console.log(`Found growth/equity percentage: ${pct.value}%`);
+        }
+      }
+      
+      // Check for defensive/bond keywords  
+      if (/defensive|bond|bonds|fixed|gilt|cash|income/i.test(context)) {
+        if (defensivePercent === null) {
+          defensivePercent = pct.value;
+          console.log(`Found defensive/bond percentage: ${pct.value}%`);
+        }
+      }
+    }
+  }
+
+  // Strategy 2: If we found one, calculate the other
   if (growthPercent !== null && defensivePercent === null) {
     defensivePercent = 100 - growthPercent;
     console.log(`Calculated defensive: ${defensivePercent}%`);
@@ -445,7 +420,57 @@ function extractPercentageDataFromReplacements(replacements: ProcessedReplacemen
     console.log(`Calculated growth: ${growthPercent}%`);
   }
 
+  // Strategy 3: Look for pairs that sum to 100
+  if (growthPercent === null && defensivePercent === null) {
+    // Look for two percentages that add up to ~100
+    for (let i = 0; i < allPercentages.length; i++) {
+      for (let j = i + 1; j < allPercentages.length; j++) {
+        const sum = allPercentages[i].value + allPercentages[j].value;
+        if (Math.abs(sum - 100) < 2) {
+          // Found a likely pair
+          const val1 = allPercentages[i].value;
+          const val2 = allPercentages[j].value;
+          
+          // Assume larger is equities (common in balanced portfolios)
+          growthPercent = Math.max(val1, val2);
+          defensivePercent = Math.min(val1, val2);
+          console.log(`Found pair summing to 100: ${growthPercent}% + ${defensivePercent}%`);
+          break;
+        }
+      }
+      if (growthPercent !== null) break;
+    }
+  }
+
+  // Strategy 4: Look for specific patterns like "61% in equities" in the document
+  const allocationPattern = /(\d+\.?\d*)\s*%?\s*(?:in\s+)?(?:equities|growth|stocks)/i;
+  const bondPattern = /(\d+\.?\d*)\s*%?\s*(?:in\s+)?(?:bonds|defensive|fixed)/i;
+  
+  if (growthPercent === null) {
+    const eqMatch = originalDocXml.match(allocationPattern);
+    if (eqMatch) {
+      growthPercent = parseFloat(eqMatch[1]);
+      console.log(`Found equity allocation from document pattern: ${growthPercent}%`);
+    }
+  }
+  
+  if (defensivePercent === null) {
+    const bondMatch = originalDocXml.match(bondPattern);
+    if (bondMatch) {
+      defensivePercent = parseFloat(bondMatch[1]);
+      console.log(`Found bond allocation from document pattern: ${defensivePercent}%`);
+    }
+  }
+
+  // Final calculation if we have one value
+  if (growthPercent !== null && defensivePercent === null) {
+    defensivePercent = 100 - growthPercent;
+  } else if (defensivePercent !== null && growthPercent === null) {
+    growthPercent = 100 - defensivePercent;
+  }
+
   if (growthPercent !== null && defensivePercent !== null) {
+    console.log(`Final pie chart data: Equities ${growthPercent}%, Bonds ${defensivePercent}%`);
     return {
       imagePath: "",
       growthPercent,
@@ -454,7 +479,7 @@ function extractPercentageDataFromReplacements(replacements: ProcessedReplacemen
     };
   }
 
-  console.log("No percentage data found in replacements");
+  console.log("Could not determine percentage data for pie chart");
   return null;
 }
 
@@ -614,14 +639,18 @@ async function replacePieCharts(
   const contextPosition = contextMatch.index;
   console.log(`Found pie chart context at position ${contextPosition}`);
   
-  // Find images that appear near this context (within ~5000 chars)
+  // Find the best candidate image for pie chart replacement
+  // Prefer images that are close to allocation context but not logos
+  let bestCandidate: { path: string; distance: number; position: number } | null = null;
+  
   for (const imagePath of imageFiles) {
-    const imageName = imagePath.split("/").pop();
+    const imageName = imagePath.split("/").pop() || "";
     
     // Skip images that are likely logos (often named logo, header, or appear very early in doc)
-    if (imageName?.toLowerCase().includes('logo') || 
-        imageName?.toLowerCase().includes('header') ||
-        imageName?.toLowerCase().includes('footer')) {
+    if (imageName.toLowerCase().includes('logo') || 
+        imageName.toLowerCase().includes('header') ||
+        imageName.toLowerCase().includes('footer') ||
+        imageName.toLowerCase().includes('signature')) {
       console.log(`Skipping likely logo/header image: ${imagePath}`);
       continue;
     }
@@ -639,18 +668,29 @@ async function replacePieCharts(
         
         console.log(`Image ${imageName} at position ${imagePosition}, distance from context: ${distanceFromContext}`);
         
-        // Only replace if image is within reasonable distance of pie chart context
-        // and not at the very start of document (likely header/logo area)
-        if (distanceFromContext < 10000 && imagePosition > 5000) {
-          console.log(`Replacing pie chart image: ${imagePath}`);
-          zip.file(imagePath, newPieChartData);
-          console.log("Pie chart replaced successfully");
-          break;
-        } else {
-          console.log(`Skipping image ${imageName} - too far from context or in header area`);
+        // Skip images at the very start (likely logo/header area - first 3000 chars)
+        if (imagePosition < 3000) {
+          console.log(`Skipping ${imageName} - appears to be in header area`);
+          continue;
+        }
+        
+        // Track the best candidate (closest to allocation context)
+        if (bestCandidate === null || distanceFromContext < bestCandidate.distance) {
+          bestCandidate = { path: imagePath, distance: distanceFromContext, position: imagePosition };
         }
       }
     }
+  }
+  
+  // Replace the best candidate if found (within reasonable distance - 150000 chars)
+  if (bestCandidate && bestCandidate.distance < 150000) {
+    console.log(`Replacing pie chart image: ${bestCandidate.path} (distance: ${bestCandidate.distance})`);
+    zip.file(bestCandidate.path, newPieChartData);
+    console.log("Pie chart replaced successfully");
+  } else if (bestCandidate) {
+    console.log(`Best candidate ${bestCandidate.path} too far (${bestCandidate.distance} chars)`);
+  } else {
+    console.log("No suitable pie chart image found");
   }
 }
 
