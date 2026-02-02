@@ -4,6 +4,7 @@ import JSZip from "https://esm.sh/jszip@3.10.1";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+  "Access-Control-Expose-Headers": "Content-Disposition",
 };
 
 interface HighlightedSection {
@@ -350,59 +351,88 @@ function escapeXml(text: string): string {
 }
 
 // Extract percentage data from replacements for pie chart generation
-function extractPercentageDataFromReplacements(replacements: ProcessedReplacement[]): PieChartData | null {
-  // Look through the actual replacement text for percentage values
-  // This ensures we use the AI-generated values, not the original document values
+function extractPercentageDataFromReplacements(replacements: ProcessedReplacement[], originalDocXml: string): PieChartData | null {
+  // Strategy: Look at the CONTEXT of what was being replaced to understand what the value represents
+  // The replacement text might just be "54.2%" but the original context tells us if it's growth or defensive
   
   let growthPercent: number | null = null;
   let defensivePercent: number | null = null;
 
+  // First, collect all percentage replacements with their context
+  const percentageReplacements: { value: number; originalContext: string; newText: string }[] = [];
+  
   for (const replacement of replacements) {
-    const text = replacement.newText;
-    
-    // Look for growth/equity patterns
-    const growthPatterns = [
-      /(\d+\.?\d*)\s*%?\s*(?:growth|equity|equities)/gi,
-      /(?:growth|equity|equities)[:\s]*(\d+\.?\d*)\s*%?/gi,
-      /(\d+\.?\d*)%/g, // Just percentage - will need context
-    ];
-    
-    // Look for defensive/bond patterns  
-    const defensivePatterns = [
-      /(\d+\.?\d*)\s*%?\s*(?:defensive|bonds?|fixed)/gi,
-      /(?:defensive|bonds?|fixed)[:\s]*(\d+\.?\d*)\s*%?/gi,
-    ];
-
-    // Check if this replacement mentions growth/equity
-    if (/growth|equity|equities/i.test(text)) {
-      for (const pattern of growthPatterns) {
-        pattern.lastIndex = 0; // Reset regex
-        const match = pattern.exec(text);
-        if (match) {
-          const val = parseFloat(match[1]);
-          if (val > 0 && val <= 100) {
-            growthPercent = val;
-            console.log(`Found growth percentage in replacement: ${val}% from "${text}"`);
-            break;
-          }
+    // Extract percentage from the NEW text
+    const percentMatch = replacement.newText.match(/(\d+\.?\d*)\s*%?/);
+    if (percentMatch) {
+      const val = parseFloat(percentMatch[1]);
+      if (val > 0 && val <= 100) {
+        // Get surrounding context from the original document to understand what this percentage represents
+        const originalText = replacement.originalText;
+        const position = originalDocXml.indexOf(originalText);
+        let context = "";
+        if (position !== -1) {
+          // Get 200 chars before and after for context
+          const start = Math.max(0, position - 200);
+          const end = Math.min(originalDocXml.length, position + originalText.length + 200);
+          context = originalDocXml.substring(start, end).toLowerCase();
         }
+        
+        percentageReplacements.push({
+          value: val,
+          originalContext: context,
+          newText: replacement.newText
+        });
+      }
+    }
+  }
+
+  console.log(`Found ${percentageReplacements.length} percentage replacements`);
+
+  // Now identify which percentage is growth (equity) and which is defensive (bonds)
+  for (const pct of percentageReplacements) {
+    const ctx = pct.originalContext;
+    
+    // Check for growth/equity indicators in context
+    if (/growth|equity|equities|stock|shares/i.test(ctx)) {
+      if (growthPercent === null) {
+        growthPercent = pct.value;
+        console.log(`Identified growth percentage: ${pct.value}% from context containing growth/equity keywords`);
       }
     }
     
-    // Check if this replacement mentions defensive/bonds
-    if (/defensive|bonds?|fixed/i.test(text)) {
-      for (const pattern of defensivePatterns) {
-        pattern.lastIndex = 0; // Reset regex
-        const match = pattern.exec(text);
-        if (match) {
-          const val = parseFloat(match[1]);
-          if (val > 0 && val <= 100) {
-            defensivePercent = val;
-            console.log(`Found defensive percentage in replacement: ${val}% from "${text}"`);
-            break;
+    // Check for defensive/bond indicators in context
+    if (/defensive|bond|fixed\s*income|gilts|cash/i.test(ctx)) {
+      if (defensivePercent === null) {
+        defensivePercent = pct.value;
+        console.log(`Identified defensive percentage: ${pct.value}% from context containing defensive/bond keywords`);
+      }
+    }
+  }
+
+  // If we still haven't found both, look for pairs that add up to ~100%
+  if (growthPercent === null || defensivePercent === null) {
+    for (let i = 0; i < percentageReplacements.length; i++) {
+      for (let j = i + 1; j < percentageReplacements.length; j++) {
+        const sum = percentageReplacements[i].value + percentageReplacements[j].value;
+        if (Math.abs(sum - 100) < 1) { // Allow for rounding
+          // Found a pair that adds to 100%
+          const val1 = percentageReplacements[i].value;
+          const val2 = percentageReplacements[j].value;
+          
+          // The larger one is typically equities/growth in balanced portfolios
+          if (val1 > val2) {
+            growthPercent = val1;
+            defensivePercent = val2;
+          } else {
+            growthPercent = val2;
+            defensivePercent = val1;
           }
+          console.log(`Found complementary pair: ${growthPercent}% + ${defensivePercent}% = ${sum}%`);
+          break;
         }
       }
+      if (growthPercent !== null && defensivePercent !== null) break;
     }
   }
 
@@ -518,8 +548,8 @@ async function replacePieCharts(
   replacements: ProcessedReplacement[]
 ): Promise<void> {
   // Extract the new percentage data from the actual AI replacements
-  // This ensures we use the values the AI generated, not parsed document text
-  const percentageData = extractPercentageDataFromReplacements(replacements);
+  // Pass the original document XML for context analysis
+  const percentageData = extractPercentageDataFromReplacements(replacements, documentXml);
   
   if (!percentageData) {
     console.log("No percentage data found in replacements for pie chart generation");
