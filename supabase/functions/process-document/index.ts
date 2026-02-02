@@ -71,59 +71,25 @@ function extractHighlightedSections(documentXml: string): HighlightedSection[] {
   return highlightedSections;
 }
 
-async function fetchMarketData(): Promise<string> {
-  const alphaVantageKey = Deno.env.get("ALPHA_VANTAGE_API_KEY");
+function getRealisticDataGuidelines(): string {
+  const currentDate = new Date();
+  const formattedDate = currentDate.toLocaleDateString('en-GB', { 
+    day: 'numeric', 
+    month: 'long', 
+    year: 'numeric' 
+  });
   
-  if (!alphaVantageKey) {
-    console.log("ALPHA_VANTAGE_API_KEY not configured, using AI-generated estimates");
-    return "";
-  }
+  return `CURRENT DATE: ${formattedDate}
 
-  try {
-    // Fetch S&P 500 (SPY) data as a general market benchmark
-    const response = await fetch(
-      `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey=${alphaVantageKey}`
-    );
-    
-    if (!response.ok) {
-      console.log("Failed to fetch market data:", response.status);
-      return "";
-    }
-
-    const data = await response.json();
-    const quote = data["Global Quote"];
-    
-    if (!quote) {
-      console.log("No market data returned");
-      return "";
-    }
-
-    const price = parseFloat(quote["05. price"] || "0");
-    const changePercent = quote["10. change percent"] || "0%";
-    
-    // Also fetch UK market (FTSE) for UK-based documents
-    const ftseResponse = await fetch(
-      `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=EWU&apikey=${alphaVantageKey}`
-    );
-    
-    let ftseData = "";
-    if (ftseResponse.ok) {
-      const ftseJson = await ftseResponse.json();
-      const ftseQuote = ftseJson["Global Quote"];
-      if (ftseQuote) {
-        ftseData = `UK Market (EWU): ${ftseQuote["10. change percent"]} change`;
-      }
-    }
-
-    return `CURRENT MARKET DATA (use for realistic values):
-- S&P 500 (SPY): $${price.toFixed(2)}, ${changePercent} change
-- ${ftseData}
-- Use these trends to inform investment performance figures
-- For UK £ amounts, use realistic variations based on market conditions`;
-  } catch (error) {
-    console.log("Error fetching market data:", error);
-    return "";
-  }
+REALISTIC VALUE GUIDELINES (use these ranges for professional financial documents):
+- UK Pension Values: £30,000 - £500,000 (typical range)
+- Investment Returns: 3% - 8% annually (realistic long-term)
+- Inflation Rates: 2% - 4% (typical assumption)
+- Risk-Free Rates: 4% - 5% (current UK rates)
+- Annuity Rates: 5% - 7% (depending on age/type)
+- Transfer Values: Generate realistic figures based on context
+- Percentages: Use professional variations (e.g., 42.3% instead of round 40%)
+- Monetary amounts: Use realistic figures with appropriate precision (e.g., £43,567 not £40,000)`;
 }
 
 async function generateAllReplacements(
@@ -407,16 +373,13 @@ serve(async (req) => {
       );
     }
 
-    // Fetch market data for realistic values
-    console.log("Fetching current market data...");
-    const marketData = await fetchMarketData();
-    if (marketData) {
-      console.log("Market data fetched successfully");
-    }
+    // Get realistic data guidelines for AI
+    const dataGuidelines = getRealisticDataGuidelines();
+    console.log("Using realistic data guidelines for document generation");
 
     // Generate all replacements in a single batched API call
     console.log(`Processing ${highlightedSections.length} highlighted sections in a single batch request`);
-    const replacementMap = await generateAllReplacements(instructionPrompt, highlightedSections, marketData);
+    const replacementMap = await generateAllReplacements(instructionPrompt, highlightedSections, dataGuidelines);
     
     console.log(`Received ${replacementMap.size} replacements from AI`);
     
