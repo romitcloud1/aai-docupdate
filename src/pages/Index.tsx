@@ -26,13 +26,24 @@ const Index = () => {
       formData.append("instructionPrompt", instructionFile);
       formData.append("clientData", clientDataFile);
 
-      const { data, error } = await supabase.functions.invoke("process-document", {
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/process-document`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${supabaseKey}`,
+          "apikey": supabaseKey,
+        },
         body: formData,
       });
 
-      if (error) {
-        throw new Error(error.message || "Failed to process document");
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to process document");
       }
+
+      const data = await response.arrayBuffer();
 
       // The response is a blob (the docx file)
       const blob = new Blob([data], {
