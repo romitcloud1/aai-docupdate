@@ -934,14 +934,14 @@ async function replacePieCharts(
   documentXml: string,
   modifiedXml: string,
   replacements: ProcessedReplacement[]
-): Promise<void> {
+): Promise<{ modifiedXml: string }> {
   // Extract the new percentage data from the actual AI replacements
   // Pass the original document XML for context analysis
   const percentageData = extractPercentageDataFromReplacements(replacements, documentXml);
   
   if (!percentageData) {
     console.log("No percentage data found in replacements for pie chart generation");
-    return;
+    return { modifiedXml };
   }
 
   console.log(`Using replacement percentages: Equities ${percentageData.growthPercent}%, Bonds ${percentageData.defensivePercent}%`);
@@ -950,7 +950,7 @@ async function replacePieCharts(
   const mediaFolder = zip.folder("word/media");
   if (!mediaFolder) {
     console.log("No media folder found in document");
-    return;
+    return { modifiedXml };
   }
 
   // Get list of image files
@@ -966,144 +966,127 @@ async function replacePieCharts(
 
   console.log(`Found ${imageFiles.length} images in document`);
 
-  if (imageFiles.length === 0) {
-    return;
-  }
-
   // Generate the new pie chart
   const newPieChartData = await generatePieChart(percentageData);
   
   if (!newPieChartData) {
     console.log("Failed to generate new pie chart");
-    return;
+    return { modifiedXml };
   }
 
-  // More selective pie chart detection - avoid replacing logos
-  // Look for images that appear NEAR percentage/allocation text in the document
+  // STRATEGY: Add a NEW image to the document instead of replacing
+  // This will help diagnose if the issue is with generation vs replacement
   
+  // 1. Add the new pie chart as a new media file
+  const newImageName = `image_pie_generated.png`;
+  const newImagePath = `word/media/${newImageName}`;
+  zip.file(newImagePath, newPieChartData);
+  console.log(`Added new pie chart image: ${newImagePath}`);
+
+  // 2. Add relationship for the new image
   const relsFile = zip.file("word/_rels/document.xml.rels");
   if (!relsFile) {
     console.log("No document.xml.rels found");
-    return;
+    return { modifiedXml };
   }
 
-  const relsContent = await relsFile.async("text");
+  let relsContent = await relsFile.async("text");
   
-  // CRITICAL: Look specifically for PIE CHART context - must explicitly mention "pie" 
-  // to avoid replacing line charts or other chart types
-  const pieChartContextPattern = /(?:pie\s*chart|asset\s*allocation\s*pie|allocation\s*breakdown|portfolio\s*split\s*chart)/gi;
+  // Find the highest existing rId number
+  const rIdMatches = relsContent.matchAll(/Id="rId(\d+)"/g);
+  let maxRId = 0;
+  for (const match of rIdMatches) {
+    const id = parseInt(match[1], 10);
+    if (id > maxRId) maxRId = id;
+  }
   
-  // Also look for specific section headers that typically contain pie charts
-  const allocationSectionPattern = /(?:current\s*asset\s*allocation|portfolio\s*allocation|investment\s*allocation)[^<]{0,500}(?:equities|bonds|growth|defensive)/gi;
+  const newRId = `rId${maxRId + 1}`;
+  console.log(`Creating new relationship: ${newRId} -> ${newImageName}`);
   
-  // Find the approximate position of pie chart context in the document
-  let contextMatch = pieChartContextPattern.exec(modifiedXml);
-  let contextPosition: number | null = null;
+  // Add new relationship before closing tag
+  relsContent = relsContent.replace(
+    '</Relationships>',
+    `<Relationship Id="${newRId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${newImageName}"/>\n</Relationships>`
+  );
+  zip.file("word/_rels/document.xml.rels", relsContent);
   
-  if (contextMatch) {
-    contextPosition = contextMatch.index;
-    console.log(`Found explicit pie chart context at position ${contextPosition}`);
+  // 3. Find where to insert the new pie chart - look for allocation text
+  const allocationPattern = /(?:asset\s*allocation|equities.*bonds|growth.*defensive|portfolio\s*split|investment\s*mix)/gi;
+  const allocationMatch = allocationPattern.exec(modifiedXml);
+  
+  let insertPosition = -1;
+  if (allocationMatch) {
+    // Find the end of the paragraph containing this text
+    insertPosition = modifiedXml.indexOf('</w:p>', allocationMatch.index);
+    console.log(`Found allocation context at ${allocationMatch.index}, paragraph ends at ${insertPosition}`);
+  }
+  
+  // 4. Create drawing XML for the new pie chart image
+  // The image will be inserted as an inline drawing
+  const drawingXml = `
+    <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:pPr><w:jc w:val="center"/></w:pPr>
+      <w:r>
+        <w:rPr/>
+        <w:drawing xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+          <wp:inline distT="0" distB="0" distL="0" distR="0">
+            <wp:extent cx="4572000" cy="3429000"/>
+            <wp:effectExtent l="0" t="0" r="0" b="0"/>
+            <wp:docPr id="${maxRId + 100}" name="Generated Pie Chart"/>
+            <wp:cNvGraphicFramePr>
+              <a:graphicFrameLocks noChangeAspect="1"/>
+            </wp:cNvGraphicFramePr>
+            <a:graphic>
+              <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic>
+                  <pic:nvPicPr>
+                    <pic:cNvPr id="0" name="Generated Pie Chart"/>
+                    <pic:cNvPicPr/>
+                  </pic:nvPicPr>
+                  <pic:blipFill>
+                    <a:blip r:embed="${newRId}"/>
+                    <a:stretch>
+                      <a:fillRect/>
+                    </a:stretch>
+                  </pic:blipFill>
+                  <pic:spPr>
+                    <a:xfrm>
+                      <a:off x="0" y="0"/>
+                      <a:ext cx="4572000" cy="3429000"/>
+                    </a:xfrm>
+                    <a:prstGeom prst="rect">
+                      <a:avLst/>
+                    </a:prstGeom>
+                  </pic:spPr>
+                </pic:pic>
+              </a:graphicData>
+            </a:graphic>
+          </wp:inline>
+        </w:drawing>
+      </w:r>
+    </w:p>
+    <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:pPr><w:jc w:val="center"/></w:pPr>
+      <w:r>
+        <w:t>Generated Pie Chart: Equities ${percentageData.growthPercent}%, Bonds ${percentageData.defensivePercent}%</w:t>
+      </w:r>
+    </w:p>`;
+
+  // 5. Insert the new pie chart into the document
+  if (insertPosition > 0) {
+    // Insert after the paragraph containing allocation text
+    const beforeInsert = modifiedXml.substring(0, insertPosition + 6); // include </w:p>
+    const afterInsert = modifiedXml.substring(insertPosition + 6);
+    modifiedXml = beforeInsert + drawingXml + afterInsert;
+    console.log(`Inserted new pie chart drawing after allocation paragraph`);
   } else {
-    // Fallback: look for allocation section with percentages
-    const allocMatch = allocationSectionPattern.exec(modifiedXml);
-    if (allocMatch) {
-      contextPosition = allocMatch.index;
-      console.log(`Found allocation section context at position ${contextPosition}`);
-    }
+    // Fallback: Insert before the closing body tag
+    modifiedXml = modifiedXml.replace('</w:body>', drawingXml + '</w:body>');
+    console.log(`Inserted new pie chart drawing at end of document body`);
   }
   
-  if (contextPosition === null) {
-    console.log("No pie chart context found in document - skipping image replacement to preserve other charts");
-    return;
-  }
-  
-  // Find all candidate images with their positions
-  const imageCandidates: { path: string; position: number; name: string }[] = [];
-  
-  for (const imagePath of imageFiles) {
-    const imageName = imagePath.split("/").pop() || "";
-    
-    // Skip images that are likely logos
-    if (imageName.toLowerCase().includes('logo') || 
-        imageName.toLowerCase().includes('header') ||
-        imageName.toLowerCase().includes('footer') ||
-        imageName.toLowerCase().includes('signature')) {
-      console.log(`Skipping likely logo/header image: ${imagePath}`);
-      continue;
-    }
-    
-    const imageIdMatch = relsContent.match(new RegExp(`Id="([^"]+)"[^>]*Target="media/${imageName}"`));
-    
-    if (imageIdMatch) {
-      const rId = imageIdMatch[1];
-      const imageUsagePattern = new RegExp(`<a:blip[^>]*r:embed="${rId}"`, 'gi');
-      const imageMatch = imageUsagePattern.exec(modifiedXml);
-      
-      if (imageMatch) {
-        const imagePosition = imageMatch.index;
-        
-        // Skip images at the very start (likely logo/header area)
-        if (imagePosition < 10000) {
-          console.log(`Skipping ${imageName} - appears to be in header/logo area (position ${imagePosition} < 10000)`);
-          continue;
-        }
-        
-        imageCandidates.push({ path: imagePath, position: imagePosition, name: imageName });
-        console.log(`Image candidate: ${imageName} at position ${imagePosition}`);
-      }
-    }
-  }
-  
-  if (imageCandidates.length === 0) {
-    console.log("No suitable image candidates found");
-    return;
-  }
-  
-  // Sort candidates by position
-  imageCandidates.sort((a, b) => a.position - b.position);
-  
-  // Find the image that appears AFTER the allocation context (pie charts typically follow the text describing them)
-  // This is more reliable than just "closest" since line charts may also be close to allocation text
-  let bestCandidate: { path: string; position: number; name: string } | null = null;
-  
-  for (const candidate of imageCandidates) {
-    // Look for image AFTER the context (pie chart should follow the allocation text)
-    if (candidate.position > contextPosition) {
-      const distance = candidate.position - contextPosition;
-      console.log(`Candidate ${candidate.name} is ${distance} chars AFTER context`);
-      
-      // Pick the first image after context within reasonable distance
-      if (distance < 100000) {
-        bestCandidate = candidate;
-        console.log(`Selected ${candidate.name} as pie chart (first image after allocation context)`);
-        break;
-      }
-    }
-  }
-  
-  // Fallback: if no image found after context, look for the closest one
-  if (!bestCandidate && imageCandidates.length > 0) {
-    let minDistance = Infinity;
-    for (const candidate of imageCandidates) {
-      const distance = Math.abs(candidate.position - contextPosition);
-      if (distance < minDistance && distance < 150000) {
-        minDistance = distance;
-        bestCandidate = candidate;
-      }
-    }
-    if (bestCandidate) {
-      console.log(`Fallback: Selected ${bestCandidate.name} as closest image to context`);
-    }
-  }
-  
-  // Replace the best candidate if found
-  if (bestCandidate) {
-    console.log(`Replacing pie chart image: ${bestCandidate.path}`);
-    zip.file(bestCandidate.path, newPieChartData);
-    console.log("Pie chart replaced successfully");
-  } else {
-    console.log("No suitable pie chart image found");
-  }
+  console.log("New pie chart added successfully (not replacing existing images)");
+  return { modifiedXml };
 }
 
 serve(async (req) => {
@@ -1246,15 +1229,18 @@ serve(async (req) => {
     });
 
     // Create the modified document
-    const modifiedXml = replaceHighlightedText(documentXml, replacements);
-    clientZip.file("word/document.xml", modifiedXml);
+    let modifiedXml = replaceHighlightedText(documentXml, replacements);
     
     // Attempt to regenerate charts with new data from actual replacements
     console.log("Checking for line charts to regenerate...");
     await replaceLineCharts(clientZip, documentXml, modifiedXml, replacements);
     
-    console.log("Checking for pie charts to regenerate...");
-    await replacePieCharts(clientZip, documentXml, modifiedXml, replacements);
+    console.log("Checking for pie charts to regenerate (adding new chart)...");
+    const pieChartResult = await replacePieCharts(clientZip, documentXml, modifiedXml, replacements);
+    modifiedXml = pieChartResult.modifiedXml;
+    
+    // Save the final modified XML
+    clientZip.file("word/document.xml", modifiedXml);
     
     const outputBuffer = await clientZip.generateAsync({ 
       type: "arraybuffer",
