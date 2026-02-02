@@ -13,6 +13,7 @@ const Index = () => {
   const [status, setStatus] = useState<ProcessingState>("idle");
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [downloadFilename, setDownloadFilename] = useState<string>("");
 
   const handleGenerate = useCallback(async () => {
     if (!instructionFile || !clientDataFile) return;
@@ -45,12 +46,23 @@ const Index = () => {
 
       const data = await response.arrayBuffer();
 
+      // Extract filename from Content-Disposition header
+      const contentDisposition = response.headers.get("Content-Disposition");
+      let filename = "updated-document.docx";
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename="([^"]+)"/);
+        if (match) {
+          filename = match[1];
+        }
+      }
+
       // The response is a blob (the docx file)
       const blob = new Blob([data], {
         type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       });
       const url = URL.createObjectURL(blob);
       setDownloadUrl(url);
+      setDownloadFilename(filename);
       setStatus("success");
       setStatusMessage("Document processed successfully! Click below to download.");
     } catch (err) {
@@ -62,13 +74,14 @@ const Index = () => {
   const handleDownload = useCallback(() => {
     if (!downloadUrl) return;
     
+    // Get filename from state or generate default
     const link = document.createElement("a");
     link.href = downloadUrl;
-    link.download = "updated-document.docx";
+    link.download = downloadFilename || "updated-document.docx";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  }, [downloadUrl]);
+  }, [downloadUrl, downloadFilename]);
 
   const isReady = instructionFile && clientDataFile;
 

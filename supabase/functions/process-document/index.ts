@@ -409,19 +409,19 @@ async function generatePieChart(data: PieChartData): Promise<Uint8Array | null> 
     return null;
   }
 
-  const prompt = `Generate a clean, professional pie chart with exactly 2 segments:
-- Equities: ${data.growthPercent.toFixed(1)}% (use a blue color like #4472C4)
-- Bonds: ${data.defensivePercent.toFixed(1)}% (use a orange/coral color like #ED7D31)
+  const prompt = `Create a simple, clean 2D pie chart image with exactly 2 slices:
+- First slice: ${data.growthPercent.toFixed(1)}% - use solid BLUE color (#4472C4)
+- Second slice: ${data.defensivePercent.toFixed(1)}% - use solid ORANGE color (#ED7D31)
 
-Requirements:
-- Simple, modern financial chart style
-- White background
-- Show percentage labels on or next to each segment (e.g., "52.9%", "47.1%")
-- Include a small legend showing "Equities" and "Bonds" with their colors
-- Clean typography
-- No 3D effects
-- Professional look suitable for a financial document
-- The chart should be clearly readable at 300x300 pixels`;
+CRITICAL REQUIREMENTS:
+- Simple 2D pie chart, NO 3D effects
+- Clean white background
+- Show percentage values directly ON each slice in white/black text for readability
+- Small legend below showing: Blue = "Equities", Orange = "Bonds"
+- Professional financial document style
+- No fancy effects, shadows or gradients - keep it flat and simple
+- Make sure the proportions are accurate to the percentages given
+- Square image format, suitable for embedding in Word document`;
 
   try {
     console.log(`Generating pie chart with Equities: ${data.growthPercent}%, Bonds: ${data.defensivePercent}%`);
@@ -433,7 +433,7 @@ Requirements:
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash-image",
+        model: "google/gemini-3-pro-image-preview",
         messages: [
           {
             role: "user",
@@ -446,6 +446,8 @@ Requirements:
 
     if (!response.ok) {
       console.log(`Pie chart generation failed: ${response.status}`);
+      const errText = await response.text();
+      console.log(`Error details: ${errText}`);
       return null;
     }
 
@@ -602,6 +604,14 @@ serve(async (req) => {
     const formData = await req.formData();
     const instructionFile = formData.get("instructionPrompt");
     const clientDataFile = formData.get("clientData");
+    
+    // Get original filename for the output
+    let originalFileName = "document";
+    if (clientDataFile && typeof clientDataFile === 'object' && 'name' in clientDataFile) {
+      const fullName = (clientDataFile as File).name;
+      // Remove .docx extension if present
+      originalFileName = fullName.replace(/\.docx$/i, '');
+    }
 
     console.log("Received instructionPrompt type:", typeof instructionFile, instructionFile?.constructor?.name);
     console.log("Received clientData type:", typeof clientDataFile, clientDataFile?.constructor?.name);
@@ -738,12 +748,22 @@ serve(async (req) => {
       compressionOptions: { level: 9 }
     });
 
+    // Generate output filename with original name + current date (ddmmyyyy)
+    const now = new Date();
+    const day = String(now.getDate()).padStart(2, '0');
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const year = now.getFullYear();
+    const dateStr = `${day}${month}${year}`;
+    const outputFileName = `${originalFileName}_${dateStr}.docx`;
+    
+    console.log(`Output filename: ${outputFileName}`);
+
     // Return the modified document
     return new Response(outputBuffer, {
       headers: {
         ...corsHeaders,
         "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="updated-document.docx"`
+        "Content-Disposition": `attachment; filename="${outputFileName}"`
       }
     });
 
