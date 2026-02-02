@@ -125,6 +125,12 @@ Generate the replacement text now:`
 
   if (!response.ok) {
     const errorText = await response.text();
+    if (response.status === 429) {
+      throw new Error("Rate limited: The AI service is currently busy. Please wait a moment and try again.");
+    }
+    if (response.status === 402) {
+      throw new Error("AI service credits exhausted. Please try again later.");
+    }
     throw new Error(`AI API error: ${response.status} - ${errorText}`);
   }
 
