@@ -82,18 +82,22 @@ async function generateReplacementText(
     throw new Error("LOVABLE_API_KEY is not configured");
   }
 
-  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "google/gemini-3-flash-preview",
-      messages: [
-        {
-          role: "system",
-          content: `You are a professional document editor. Your task is to replace highlighted placeholder text in documents based on specific instructions.
+  const maxRetries = 5;
+  const baseDelay = 2000; // Start with 2 seconds
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-3-flash-preview",
+        messages: [
+          {
+            role: "system",
+            content: `You are a professional document editor. Your task is to replace highlighted placeholder text in documents based on specific instructions.
 
 CRITICAL RULES:
 1. Generate ONLY the replacement text - no explanations, no quotes, no formatting markers
@@ -103,10 +107,10 @@ CRITICAL RULES:
 5. Do NOT change client names, beneficiary names, or third-party individuals if they appear in context
 6. For numeric or financial values, generate reasonable professional estimates
 7. Keep the same approximate length as the original placeholder unless the instruction requires more detail`
-        },
-        {
-          role: "user",
-          content: `INSTRUCTION PROMPT:
+          },
+          {
+            role: "user",
+            content: `INSTRUCTION PROMPT:
 ${instructionPrompt}
 
 DOCUMENT CONTEXT:
@@ -116,26 +120,37 @@ HIGHLIGHTED TEXT TO REPLACE:
 "${highlightedText}"
 
 Generate the replacement text now:`
-        }
-      ],
-      temperature: 0.7,
-      max_tokens: 500
-    })
-  });
+          }
+        ],
+        temperature: 0.7,
+        max_tokens: 500
+      })
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    if (response.status === 429) {
-      throw new Error("Rate limited: The AI service is currently busy. Please wait a moment and try again.");
+    if (response.ok) {
+      const data = await response.json();
+      return data.choices[0]?.message?.content?.trim() || highlightedText;
     }
+
+    if (response.status === 429) {
+      if (attempt < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, attempt); // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+        console.log(`Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw new Error("Rate limited: The AI service is busy. Please try again in a few minutes.");
+    }
+
     if (response.status === 402) {
       throw new Error("AI service credits exhausted. Please try again later.");
     }
+
+    const errorText = await response.text();
     throw new Error(`AI API error: ${response.status} - ${errorText}`);
   }
 
-  const data = await response.json();
-  return data.choices[0]?.message?.content?.trim() || highlightedText;
+  throw new Error("Max retries exceeded");
 }
 
 function replaceHighlightedText(
