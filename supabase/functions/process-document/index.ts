@@ -1061,7 +1061,7 @@ serve(async (req) => {
     const documentXml = await clientDocXml.async("text");
     const documentText = extractTextFromXml(documentXml);
     
-    // First, try to find highlighted sections (legacy mode)
+    // First, check for highlighted sections in the client data document
     const highlightedSections = extractHighlightedSections(documentXml);
     
     // Fetch market data for realistic values
@@ -1071,8 +1071,10 @@ serve(async (req) => {
     let replacements: ProcessedReplacement[];
 
     if (highlightedSections.length > 0) {
-      // Legacy mode: Process highlighted text
-      console.log(`Found ${highlightedSections.length} highlighted sections - using legacy mode`);
+      // HIGHLIGHTED MODE: Only modify highlighted sections in client data
+      console.log(`Found ${highlightedSections.length} highlighted sections in client data - using HIGHLIGHTED MODE`);
+      console.log("Only highlighted sections will be modified, non-highlighted content will be preserved.");
+      
       const replacementMap = await generateAllReplacements(instructionPrompt, highlightedSections, marketData);
       
       console.log(`Received ${replacementMap.size} replacements from AI`);
@@ -1087,21 +1089,22 @@ serve(async (req) => {
         };
       });
     } else {
-      // New mode: AI identifies placeholders based on instruction prompt
-      console.log("No highlighted sections found - using AI-driven placeholder identification");
+      // NO HIGHLIGHTS MODE: AI automatically detects and replaces financial data
+      console.log("No highlighted sections found in client data - using AUTO-DETECT MODE");
+      console.log("AI will automatically detect and replace financial data (amounts, percentages, dates, rates).");
       
       // Extract all text runs from the document
       const allTextRuns = extractAllTextRuns(documentXml);
       console.log(`Extracted ${allTextRuns.length} text runs for AI analysis`);
       
-      // Let AI identify what needs to be replaced based on the instruction prompt
+      // Let AI identify what needs to be replaced - including automatic financial data detection
       replacements = await identifyAndReplaceWithAI(instructionPrompt, documentText, allTextRuns, marketData);
       
       console.log(`AI identified ${replacements.length} replacements`);
       
       if (replacements.length === 0) {
         return new Response(
-          JSON.stringify({ error: "AI could not identify any text to replace based on the instruction prompt. Please check that your instruction prompt clearly describes what patterns or placeholders to look for." }),
+          JSON.stringify({ error: "AI could not identify any text to replace. The document may not contain any financial data or patterns matching the instruction prompt." }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
