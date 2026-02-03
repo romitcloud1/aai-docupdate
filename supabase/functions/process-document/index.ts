@@ -857,12 +857,6 @@ serve(async (req) => {
     const modifiedXml = replaceHighlightedText(documentXml, replacements);
     clientZip.file("word/document.xml", modifiedXml);
     
-    // Attempt to add new pie chart with data from actual replacements
-    // Note: We ADD a new pie chart instead of replacing existing images to preserve line charts
-    console.log("Checking for pie chart data to add...");
-    const updatedXml = await addPieChartToDocument(clientZip, documentXml, modifiedXml, replacements);
-    clientZip.file("word/document.xml", updatedXml);
-    
     const outputBuffer = await clientZip.generateAsync({ 
       type: "arraybuffer",
       compression: "DEFLATE",
