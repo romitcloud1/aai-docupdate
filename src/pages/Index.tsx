@@ -4,6 +4,7 @@ import { ProcessingStatus } from "@/components/ProcessingStatus";
 import { Button } from "@/components/ui/button";
 import { FileOutput, Sparkles } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+import advisoryAiLogo from "@/assets/advisoryai-logo.png";
 
 type ProcessingState = "idle" | "processing" | "success" | "error";
 
@@ -90,9 +91,11 @@ const Index = () => {
       <div className="max-w-2xl mx-auto px-4 py-12 sm:py-20">
         {/* Header */}
         <div className="text-center mb-12">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10 mb-6">
-            <FileOutput className="w-8 h-8 text-primary" />
-          </div>
+          <img 
+            src={advisoryAiLogo} 
+            alt="AdvisoryAI Logo" 
+            className="h-12 mx-auto mb-6"
+          />
           <h1 className="text-3xl sm:text-4xl font-bold text-foreground mb-3">
             Document Processor
           </h1>
