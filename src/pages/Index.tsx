@@ -147,11 +147,6 @@ const Index = () => {
             </Button>
           )}
         </div>
-
-        {/* Footer */}
-        <p className="text-center text-xs text-muted-foreground mt-12">
-          Only highlighted text in your document will be modified. All other content remains unchanged.
-        </p>
       </div>
     </div>
   );
