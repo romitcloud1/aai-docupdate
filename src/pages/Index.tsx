@@ -3,30 +3,33 @@ import { FileUpload } from "@/components/FileUpload";
 import { ProcessingStatus } from "@/components/ProcessingStatus";
 import { Button } from "@/components/ui/button";
 import { FileOutput, Sparkles } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
 import advisoryAiLogo from "@/assets/advisoryai-logo.png";
 
 type ProcessingState = "idle" | "processing" | "success" | "error";
 
 const Index = () => {
   const [instructionFile, setInstructionFile] = useState<File | null>(null);
-  const [clientDataFile, setClientDataFile] = useState<File | null>(null);
+  const [clientDataFiles, setClientDataFiles] = useState<File[]>([]);
   const [status, setStatus] = useState<ProcessingState>("idle");
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [downloadFilename, setDownloadFilename] = useState<string>("");
 
   const handleGenerate = useCallback(async () => {
-    if (!instructionFile || !clientDataFile) return;
+    if (!instructionFile || clientDataFiles.length === 0) return;
 
     setStatus("processing");
-    setStatusMessage("Analyzing documents and generating content...");
+    setStatusMessage(`Analyzing ${clientDataFiles.length} document${clientDataFiles.length > 1 ? "s" : ""} and generating content...`);
     setDownloadUrl(null);
 
     try {
       const formData = new FormData();
       formData.append("instructionPrompt", instructionFile);
-      formData.append("clientData", clientDataFile);
+      
+      // Append all client data files
+      clientDataFiles.forEach((file) => {
+        formData.append("clientData", file);
+      });
 
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
       const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -49,7 +52,9 @@ const Index = () => {
 
       // Extract filename from Content-Disposition header
       const contentDisposition = response.headers.get("Content-Disposition");
-      let filename = "updated-document.docx";
+      const contentType = response.headers.get("Content-Type");
+      
+      let filename = clientDataFiles.length > 1 ? "processed-documents.zip" : "updated-document.docx";
       if (contentDisposition) {
         const match = contentDisposition.match(/filename="([^"]+)"/);
         if (match) {
@@ -57,34 +62,35 @@ const Index = () => {
         }
       }
 
-      // The response is a blob (the docx file)
-      const blob = new Blob([data], {
-        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      });
+      // Determine blob type based on response
+      const blobType = contentType || (clientDataFiles.length > 1 
+        ? "application/zip" 
+        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+
+      const blob = new Blob([data], { type: blobType });
       const url = URL.createObjectURL(blob);
       setDownloadUrl(url);
       setDownloadFilename(filename);
       setStatus("success");
-      setStatusMessage("Document processed successfully! Click below to download.");
+      setStatusMessage(`${clientDataFiles.length} document${clientDataFiles.length > 1 ? "s" : ""} processed successfully! Click below to download.`);
     } catch (err) {
       setStatus("error");
       setStatusMessage(err instanceof Error ? err.message : "An unexpected error occurred");
     }
-  }, [instructionFile, clientDataFile]);
+  }, [instructionFile, clientDataFiles]);
 
   const handleDownload = useCallback(() => {
     if (!downloadUrl) return;
     
-    // Get filename from state or generate default
     const link = document.createElement("a");
     link.href = downloadUrl;
-    link.download = downloadFilename || "updated-document.docx";
+    link.download = downloadFilename || "processed-documents.zip";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   }, [downloadUrl, downloadFilename]);
 
-  const isReady = instructionFile && clientDataFile;
+  const isReady = instructionFile && clientDataFiles.length > 0;
 
   return (
     <div className="min-h-screen bg-background">
@@ -100,7 +106,7 @@ const Index = () => {
             Document Processor
           </h1>
           <p className="text-muted-foreground max-w-md mx-auto">
-            Upload your instruction prompt and client document to automatically update highlighted placeholders.
+            Upload your instruction prompt and client documents to automatically update highlighted placeholders.
           </p>
         </div>
 
@@ -115,9 +121,12 @@ const Index = () => {
 
           <FileUpload
             label="Client Data"
-            description="Word document (.docx) containing content to be processed"
-            onFileSelect={setClientDataFile}
-            selectedFile={clientDataFile}
+            description="Word documents (.docx) containing content to be processed - upload one or more files"
+            onFileSelect={() => {}}
+            selectedFile={null}
+            multiple={true}
+            onFilesSelect={setClientDataFiles}
+            selectedFiles={clientDataFiles}
           />
         </div>
 
@@ -129,7 +138,7 @@ const Index = () => {
           size="lg"
         >
           <Sparkles className="w-5 h-5 mr-2" />
-          Generate Updated Document
+          Generate Updated Document{clientDataFiles.length > 1 ? "s" : ""}
         </Button>
 
         {/* Status & Download */}
@@ -143,7 +152,7 @@ const Index = () => {
               className="w-full h-12 text-base border-success text-success hover:bg-success/10"
             >
               <FileOutput className="w-5 h-5 mr-2" />
-              Download Updated Document
+              Download {clientDataFiles.length > 1 ? "All Documents (ZIP)" : "Updated Document"}
             </Button>
           )}
         </div>
