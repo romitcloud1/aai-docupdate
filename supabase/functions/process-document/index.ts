@@ -242,8 +242,10 @@ Your job:
 
 IMPORTANT RULES:
 - Follow the instruction prompt's rules precisely
-- For author/preparer/reviewer names: Use "Romit Acharya" unless instruction says otherwise
+- For author/preparer/reviewer names in PREPARATION or REVIEW contexts: Use "Romit Acharya"
+- NEVER replace names that appear AFTER salutations like "Yours sincerely", "Yours truly", "Yours faithfully", "Kind regards", "Best regards", "Warm regards", "With thanks", "Respectfully" - these are SIGNATORY names and must be PRESERVED as-is
 - PRESERVE client names, beneficiary names, customer names - these are the people RECEIVING the document
+- PRESERVE signatory names in letter closings - keep the original name exactly as it appears
 - Use TODAY'S DATE for any date replacements (see market data for current date)
 - For numeric values: Generate realistic professional estimates
 - Only replace text that matches the patterns in the instruction prompt`
