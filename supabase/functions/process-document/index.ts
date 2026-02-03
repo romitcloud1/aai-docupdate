@@ -681,9 +681,10 @@ async function addPieChartToDocument(
       const insertPosition = modifiedXml.indexOf('</w:p>', contextMatch.index);
       
       if (insertPosition > -1) {
-        // Create a drawing element for the pie chart
+        // Create a drawing element for the pie chart - insert AFTER the closing </w:p>
+        const endOfParagraph = insertPosition + 6; // Length of "</w:p>" is 6 characters
+        
         const drawingXml = `
-</w:p>
 <w:p><w:pPr><w:jc w:val="center"/></w:pPr>
 <w:r><w:drawing>
 <wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
@@ -701,11 +702,10 @@ async function addPieChartToDocument(
 </wp:inline>
 </w:drawing></w:r>
 </w:p>
-<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>Asset Allocation: ${percentageData.growthPercent}% Equities, ${percentageData.defensivePercent}% Bonds</w:t></w:r>
-`;
+<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>Asset Allocation: ${percentageData.growthPercent}% Equities, ${percentageData.defensivePercent}% Bonds</w:t></w:r></w:p>`;
         
         // Insert after the paragraph containing allocation text
-        modifiedXml = modifiedXml.slice(0, insertPosition) + drawingXml + modifiedXml.slice(insertPosition + 5);
+        modifiedXml = modifiedXml.slice(0, endOfParagraph) + drawingXml + modifiedXml.slice(endOfParagraph);
         console.log("Inserted new pie chart into document");
       }
     }
