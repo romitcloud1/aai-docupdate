@@ -4,8 +4,13 @@ import JSZip from "https://esm.sh/jszip@3.10.1";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
-  "Access-Control-Expose-Headers": "Content-Disposition",
+  "Access-Control-Expose-Headers": "Content-Disposition, Content-Type",
 };
+
+interface ClientFile {
+  buffer: ArrayBuffer;
+  originalName: string;
+}
 
 interface HighlightedSection {
   text: string;
@@ -957,32 +962,24 @@ serve(async (req) => {
   try {
     const formData = await req.formData();
     const instructionFile = formData.get("instructionPrompt");
-    const clientDataFile = formData.get("clientData");
+    const clientDataEntries = formData.getAll("clientData");
     
-    // Get original filename for the output
-    let originalFileName = "document";
-    if (clientDataFile && typeof clientDataFile === 'object' && 'name' in clientDataFile) {
-      const fullName = (clientDataFile as File).name;
-      // Remove .docx extension if present
-      originalFileName = fullName.replace(/\.docx$/i, '');
-    }
-
     console.log("Received instructionPrompt type:", typeof instructionFile, instructionFile?.constructor?.name);
-    console.log("Received clientData type:", typeof clientDataFile, clientDataFile?.constructor?.name);
+    console.log("Received clientData count:", clientDataEntries.length);
 
-    if (!instructionFile || !clientDataFile) {
+    if (!instructionFile || clientDataEntries.length === 0) {
       return new Response(
-        JSON.stringify({ error: "Both instruction prompt and client data files are required" }),
+        JSON.stringify({ error: "Instruction prompt and at least one client data file are required" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     // Handle file data - FormData returns File/Blob objects
     let instructionBuffer: ArrayBuffer;
-    let clientBuffer: ArrayBuffer;
+    const clientFiles: ClientFile[] = [];
 
     // Type guard using duck typing for File/Blob
-    const isFileOrBlob = (value: unknown): value is { arrayBuffer: () => Promise<ArrayBuffer> } => {
+    const isFileOrBlob = (value: unknown): value is { arrayBuffer: () => Promise<ArrayBuffer>; name?: string } => {
       return value !== null && typeof value === 'object' && 'arrayBuffer' in value;
     };
 
@@ -995,24 +992,27 @@ serve(async (req) => {
       );
     }
 
-    if (isFileOrBlob(clientDataFile)) {
-      clientBuffer = await clientDataFile.arrayBuffer();
-    } else {
-      return new Response(
-        JSON.stringify({ error: "Client data must be a file" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    // Process all client data files
+    for (const clientDataFile of clientDataEntries) {
+      if (isFileOrBlob(clientDataFile)) {
+        const buffer = await clientDataFile.arrayBuffer();
+        const fullName = (clientDataFile as File).name || "document";
+        const originalName = fullName.replace(/\.docx$/i, '');
+        clientFiles.push({ buffer, originalName });
+      } else {
+        return new Response(
+          JSON.stringify({ error: "All client data entries must be files" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
     }
 
+    console.log(`Processing ${clientFiles.length} client file(s)`);
     console.log("Instruction buffer size:", instructionBuffer.byteLength);
-    console.log("Client buffer size:", clientBuffer.byteLength);
 
-    // Verify the files start with PK (zip signature)
+    // Verify the instruction file starts with PK (zip signature)
     const instructionView = new Uint8Array(instructionBuffer);
-    const clientView = new Uint8Array(clientBuffer);
-    
     console.log("Instruction file header:", instructionView[0], instructionView[1], instructionView[2], instructionView[3]);
-    console.log("Client file header:", clientView[0], clientView[1], clientView[2], clientView[3]);
 
     if (instructionView[0] !== 0x50 || instructionView[1] !== 0x4B) {
       return new Response(
@@ -1021,11 +1021,15 @@ serve(async (req) => {
       );
     }
 
-    if (clientView[0] !== 0x50 || clientView[1] !== 0x4B) {
-      return new Response(
-        JSON.stringify({ error: "Client data file is not a valid .docx file (must be a ZIP archive)" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    // Validate all client files
+    for (let i = 0; i < clientFiles.length; i++) {
+      const clientView = new Uint8Array(clientFiles[i].buffer);
+      if (clientView[0] !== 0x50 || clientView[1] !== 0x4B) {
+        return new Response(
+          JSON.stringify({ error: `Client data file "${clientFiles[i].originalName}" is not a valid .docx file` }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
     }
 
     // Extract instruction prompt text from the docx
@@ -1050,92 +1054,123 @@ serve(async (req) => {
       );
     }
 
-    // Process client data file
-    const clientZip = await JSZip.loadAsync(clientBuffer);
-    const clientDocXml = clientZip.file("word/document.xml");
-    
-    if (!clientDocXml) {
-      throw new Error("Invalid client data DOCX file");
-    }
-    
-    const documentXml = await clientDocXml.async("text");
-    const documentText = extractTextFromXml(documentXml);
-    
-    // First, check for highlighted sections in the client data document
-    const highlightedSections = extractHighlightedSections(documentXml);
-    
-    // Fetch market data for realistic values
+    // Fetch market data once for all files
     console.log("Fetching current market data...");
     const marketData = await fetchMarketData();
-    
-    let replacements: ProcessedReplacement[];
 
-    if (highlightedSections.length > 0) {
-      // HIGHLIGHTED MODE: Only modify highlighted sections in client data
-      console.log(`Found ${highlightedSections.length} highlighted sections in client data - using HIGHLIGHTED MODE`);
-      console.log("Only highlighted sections will be modified, non-highlighted content will be preserved.");
-      
-      const replacementMap = await generateAllReplacements(instructionPrompt, highlightedSections, marketData);
-      
-      console.log(`Received ${replacementMap.size} replacements from AI`);
-      
-      replacements = highlightedSections.map((section, index) => {
-        const newText = replacementMap.get(index) || section.text;
-        console.log(`Section ${index}: "${section.text.substring(0, 30)}..." -> "${newText.substring(0, 30)}..."`);
-        return {
-          originalText: section.text,
-          newText: newText,
-          fullMatch: section.fullMatch
-        };
-      });
-    } else {
-      // NO HIGHLIGHTS MODE: AI automatically detects and replaces financial data
-      console.log("No highlighted sections found in client data - using AUTO-DETECT MODE");
-      console.log("AI will automatically detect and replace financial data (amounts, percentages, dates, rates).");
-      
-      // Extract all text runs from the document
-      const allTextRuns = extractAllTextRuns(documentXml);
-      console.log(`Extracted ${allTextRuns.length} text runs for AI analysis`);
-      
-      // Let AI identify what needs to be replaced - including automatic financial data detection
-      replacements = await identifyAndReplaceWithAI(instructionPrompt, documentText, allTextRuns, marketData);
-      
-      console.log(`AI identified ${replacements.length} replacements`);
-      
-      if (replacements.length === 0) {
-        return new Response(
-          JSON.stringify({ error: "AI could not identify any text to replace. The document may not contain any financial data or patterns matching the instruction prompt." }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-    }
-
-    // Create the modified document
-    const modifiedXml = replaceHighlightedText(documentXml, replacements);
-    clientZip.file("word/document.xml", modifiedXml);
-    
-    const outputBuffer = await clientZip.generateAsync({ 
-      type: "arraybuffer",
-      compression: "DEFLATE",
-      compressionOptions: { level: 9 }
-    });
-
-    // Generate output filename with original name + current date (ddmmyyyy)
+    // Generate date string for filenames
     const now = new Date();
     const day = String(now.getDate()).padStart(2, '0');
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const year = now.getFullYear();
     const dateStr = `${day}${month}${year}`;
-    const outputFileName = `${originalFileName}_${dateStr}.docx`;
-    
-    console.log(`Output filename: ${outputFileName}`);
 
-    // Return the modified document
-    return new Response(outputBuffer, {
+    // Process each client file
+    const processedFiles: { name: string; buffer: ArrayBuffer }[] = [];
+
+    for (let fileIndex = 0; fileIndex < clientFiles.length; fileIndex++) {
+      const clientFile = clientFiles[fileIndex];
+      console.log(`\n=== Processing file ${fileIndex + 1}/${clientFiles.length}: ${clientFile.originalName} ===`);
+
+      const clientZip = await JSZip.loadAsync(clientFile.buffer);
+      const clientDocXml = clientZip.file("word/document.xml");
+      
+      if (!clientDocXml) {
+        throw new Error(`Invalid client data DOCX file: ${clientFile.originalName}`);
+      }
+      
+      const documentXml = await clientDocXml.async("text");
+      const documentText = extractTextFromXml(documentXml);
+      
+      // Check for highlighted sections in the client data document
+      const highlightedSections = extractHighlightedSections(documentXml);
+      
+      let replacements: ProcessedReplacement[];
+
+      if (highlightedSections.length > 0) {
+        // HIGHLIGHTED MODE: Only modify highlighted sections in client data
+        console.log(`Found ${highlightedSections.length} highlighted sections - using HIGHLIGHTED MODE`);
+        
+        const replacementMap = await generateAllReplacements(instructionPrompt, highlightedSections, marketData);
+        
+        console.log(`Received ${replacementMap.size} replacements from AI`);
+        
+        replacements = highlightedSections.map((section, index) => {
+          const newText = replacementMap.get(index) || section.text;
+          return {
+            originalText: section.text,
+            newText: newText,
+            fullMatch: section.fullMatch
+          };
+        });
+      } else {
+        // NO HIGHLIGHTS MODE: AI automatically detects and replaces financial data
+        console.log("No highlighted sections found - using AUTO-DETECT MODE");
+        
+        const allTextRuns = extractAllTextRuns(documentXml);
+        console.log(`Extracted ${allTextRuns.length} text runs for AI analysis`);
+        
+        replacements = await identifyAndReplaceWithAI(instructionPrompt, documentText, allTextRuns, marketData);
+        
+        console.log(`AI identified ${replacements.length} replacements`);
+        
+        if (replacements.length === 0) {
+          console.log(`Warning: No replacements found for ${clientFile.originalName}`);
+          // Continue processing other files instead of returning error
+          replacements = [];
+        }
+      }
+
+      // Create the modified document
+      const modifiedXml = replaceHighlightedText(documentXml, replacements);
+      clientZip.file("word/document.xml", modifiedXml);
+      
+      const outputBuffer = await clientZip.generateAsync({ 
+        type: "arraybuffer",
+        compression: "DEFLATE",
+        compressionOptions: { level: 9 }
+      });
+
+      const outputFileName = `${clientFile.originalName}_${dateStr}.docx`;
+      processedFiles.push({ name: outputFileName, buffer: outputBuffer });
+      
+      console.log(`Completed: ${outputFileName}`);
+    }
+
+    // If only one file, return it directly
+    if (processedFiles.length === 1) {
+      console.log(`Returning single file: ${processedFiles[0].name}`);
+      return new Response(processedFiles[0].buffer, {
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "Content-Disposition": `attachment; filename="${processedFiles[0].name}"`
+        }
+      });
+    }
+
+    // Multiple files: create a ZIP archive
+    console.log(`Creating ZIP archive with ${processedFiles.length} files`);
+    const outputZip = new JSZip();
+    
+    for (const file of processedFiles) {
+      outputZip.file(file.name, file.buffer);
+    }
+    
+    const zipBuffer = await outputZip.generateAsync({
+      type: "arraybuffer",
+      compression: "DEFLATE",
+      compressionOptions: { level: 9 }
+    });
+
+    const zipFileName = `processed_documents_${dateStr}.zip`;
+    console.log(`Returning ZIP: ${zipFileName}`);
+    
+    return new Response(zipBuffer, {
       headers: {
         ...corsHeaders,
-        "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="${outputFileName}"`
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="${zipFileName}"`
       }
     });
 
