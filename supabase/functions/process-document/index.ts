@@ -363,9 +363,18 @@ function replaceHighlightedText(
       `<w:t$1>${escapeXml(replacement.newText)}</w:t>`
     );
     
-    // Remove highlight formatting so the replaced text is no longer highlighted
+    // Remove all forms of highlight formatting so the replaced text is no longer highlighted
+    // 1. Remove <w:highlight> tags (self-closing and with content)
     newRun = newRun.replace(/<w:highlight[^>]*\/>/g, '');
     newRun = newRun.replace(/<w:highlight[^>]*>.*?<\/w:highlight>/g, '');
+    
+    // 2. Remove <w:shd> (shading) tags that create highlight effects
+    newRun = newRun.replace(/<w:shd[^>]*\/>/g, '');
+    newRun = newRun.replace(/<w:shd[^>]*>.*?<\/w:shd>/g, '');
+    
+    // 3. Remove background color attributes that may cause highlighting
+    newRun = newRun.replace(/w:fill="[^"]*"/g, '');
+    newRun = newRun.replace(/w14:paraId="[^"]*"/g, '');
     
     // Use regex for more reliable matching
     const regex = new RegExp(escapedMatch, 'g');
