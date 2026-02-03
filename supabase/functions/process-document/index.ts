@@ -36,11 +36,10 @@ function extractTextFromXml(xmlContent: string): string {
   return texts.join(" ").trim();
 }
 
-function extractHighlightedSections(documentXml: string): HighlightedSection[] {
-  const highlightedSections: HighlightedSection[] = [];
+// Extract all text runs from document with their XML matches for potential replacement
+function extractAllTextRuns(documentXml: string): { text: string; context: string; fullMatch: string }[] {
+  const textRuns: { text: string; context: string; fullMatch: string }[] = [];
   
-  // Pattern to find runs with highlight formatting
-  // Looking for <w:r> elements that contain <w:highlight> in their <w:rPr> and have text in <w:t>
   const runPattern = /<w:r\b[^>]*>([\s\S]*?)<\/w:r>/g;
   
   let contextBuffer: string[] = [];
@@ -50,10 +49,45 @@ function extractHighlightedSections(documentXml: string): HighlightedSection[] {
     const runContent = runMatch[1];
     const fullMatch = runMatch[0];
     
-    // Check if this run has highlight formatting
+    // Extract text from this run
+    const textMatches = runContent.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g);
+    let runText = "";
+    for (const tm of textMatches) {
+      runText += tm[1];
+    }
+    
+    if (runText.trim()) {
+      contextBuffer.push(runText);
+      if (contextBuffer.length > 10) {
+        contextBuffer.shift();
+      }
+      
+      textRuns.push({
+        text: runText,
+        context: contextBuffer.slice(-5).join(" "),
+        fullMatch: fullMatch
+      });
+    }
+  }
+  
+  return textRuns;
+}
+
+// Legacy function for backward compatibility - still extract highlighted sections if they exist
+function extractHighlightedSections(documentXml: string): HighlightedSection[] {
+  const highlightedSections: HighlightedSection[] = [];
+  
+  const runPattern = /<w:r\b[^>]*>([\s\S]*?)<\/w:r>/g;
+  
+  let contextBuffer: string[] = [];
+  let runMatch: RegExpExecArray | null;
+  
+  while ((runMatch = runPattern.exec(documentXml)) !== null) {
+    const runContent = runMatch[1];
+    const fullMatch = runMatch[0];
+    
     const hasHighlight = /<w:highlight\b[^\/]*\/>/.test(runContent) || /<w:highlight\b[^>]*>/.test(runContent);
     
-    // Extract text from this run
     const textMatches = runContent.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g);
     let runText = "";
     for (const tm of textMatches) {
@@ -159,6 +193,147 @@ REALISTIC VALUE GUIDELINES (use these ranges for professional financial document
 - Annuity Rates: 5% - 7% (depending on age/type)
 - Percentages: Use professional variations (e.g., 42.3% instead of round 40%)
 - Monetary amounts: Use realistic figures with appropriate precision (e.g., £43,567 not £40,000)`;
+}
+
+// AI-driven placeholder identification - reads instruction prompt and client data to find what to replace
+async function identifyAndReplaceWithAI(
+  instructionPrompt: string,
+  documentText: string,
+  allTextRuns: { text: string; context: string; fullMatch: string }[],
+  marketData: string
+): Promise<ProcessedReplacement[]> {
+  const apiKey = Deno.env.get("LOVABLE_API_KEY");
+  
+  if (!apiKey) {
+    throw new Error("LOVABLE_API_KEY is not configured");
+  }
+
+  const maxRetries = 5;
+  const baseDelay = 2000;
+
+  // Build a text representation of available runs for the AI to identify
+  const runsWithIndices = allTextRuns.map((run, i) => 
+    `[${i}] "${run.text}"`
+  ).join("\n");
+
+  const marketContext = marketData ? `\n\n${marketData}` : "";
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-3-flash-preview",
+        messages: [
+          {
+            role: "system",
+            content: `You are a professional document editor. Your task is to analyze an instruction prompt and a client document to identify which text elements need to be replaced and what they should be replaced with.
+
+CRITICAL: Follow the instruction prompt EXACTLY and RELIGIOUSLY. The instruction prompt contains all the rules for what to find and replace.
+
+Your job:
+1. Read the instruction prompt carefully - it tells you EXACTLY what to look for and replace
+2. Examine the available text runs from the document
+3. Identify which runs match the patterns/placeholders described in the instruction prompt
+4. Generate appropriate replacement text following the instruction prompt's rules
+
+IMPORTANT RULES:
+- Follow the instruction prompt's rules precisely
+- For author/preparer/reviewer names: Use "Romit Acharya" unless instruction says otherwise
+- PRESERVE client names, beneficiary names, customer names - these are the people RECEIVING the document
+- Use TODAY'S DATE for any date replacements (see market data for current date)
+- For numeric values: Generate realistic professional estimates
+- Only replace text that matches the patterns in the instruction prompt`
+          },
+          {
+            role: "user",
+            content: `=== INSTRUCTION PROMPT (FOLLOW THIS RELIGIOUSLY) ===
+${instructionPrompt}
+${marketContext}
+
+=== AVAILABLE TEXT RUNS FROM DOCUMENT ===
+${runsWithIndices}
+
+Based on the instruction prompt above, identify which text runs need to be replaced and provide the new text for each. Only include runs that actually need replacement according to the instructions.`
+          }
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "provide_replacements",
+              description: "Identify which text runs need replacement and provide new text for each",
+              parameters: {
+                type: "object",
+                properties: {
+                  replacements: {
+                    type: "array",
+                    description: "Array of replacements for identified text runs",
+                    items: {
+                      type: "object",
+                      properties: {
+                        run_index: { type: "number", description: "The index of the text run to replace (from the list provided)" },
+                        replacement_text: { type: "string", description: "The new text to replace it with" },
+                        reason: { type: "string", description: "Brief reason why this matches a pattern from instruction prompt" }
+                      },
+                      required: ["run_index", "replacement_text", "reason"]
+                    }
+                  }
+                },
+                required: ["replacements"]
+              }
+            }
+          }
+        ],
+        tool_choice: { type: "function", function: { name: "provide_replacements" } },
+        temperature: 0.3
+      })
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      const toolCall = data.choices[0]?.message?.tool_calls?.[0];
+      
+      if (toolCall?.function?.arguments) {
+        const parsed = JSON.parse(toolCall.function.arguments);
+        const results: ProcessedReplacement[] = [];
+        
+        for (const r of parsed.replacements) {
+          const runIndex = r.run_index;
+          if (runIndex >= 0 && runIndex < allTextRuns.length) {
+            const run = allTextRuns[runIndex];
+            console.log(`AI identified replacement [${runIndex}]: "${run.text.substring(0, 30)}..." -> "${r.replacement_text.substring(0, 30)}..." (${r.reason})`);
+            results.push({
+              originalText: run.text,
+              newText: r.replacement_text,
+              fullMatch: run.fullMatch
+            });
+          }
+        }
+        
+        return results;
+      }
+      throw new Error("Invalid AI response format");
+    }
+
+    if (response.status === 429 || response.status === 402) {
+      if (attempt < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.log(`Rate limited/quota, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw new Error("AI service temporarily unavailable. Please try again in a few minutes.");
+    }
+
+    const errorText = await response.text();
+    throw new Error(`AI API error: ${response.status} - ${errorText}`);
+  }
+
+  throw new Error("Max retries exceeded");
 }
 
 async function generateBatchReplacements(
@@ -875,34 +1050,53 @@ serve(async (req) => {
     }
     
     const documentXml = await clientDocXml.async("text");
+    const documentText = extractTextFromXml(documentXml);
+    
+    // First, try to find highlighted sections (legacy mode)
     const highlightedSections = extractHighlightedSections(documentXml);
-
-    if (highlightedSections.length === 0) {
-      return new Response(
-        JSON.stringify({ error: "No highlighted text found in the client data document" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
+    
     // Fetch market data for realistic values
     console.log("Fetching current market data...");
     const marketData = await fetchMarketData();
+    
+    let replacements: ProcessedReplacement[];
 
-    // Generate all replacements in a single batched API call
-    console.log(`Processing ${highlightedSections.length} highlighted sections in a single batch request`);
-    const replacementMap = await generateAllReplacements(instructionPrompt, highlightedSections, marketData);
-    
-    console.log(`Received ${replacementMap.size} replacements from AI`);
-    
-    const replacements: ProcessedReplacement[] = highlightedSections.map((section, index) => {
-      const newText = replacementMap.get(index) || section.text;
-      console.log(`Section ${index}: "${section.text.substring(0, 30)}..." -> "${newText.substring(0, 30)}..."`);
-      return {
-        originalText: section.text,
-        newText: newText,
-        fullMatch: section.fullMatch
-      };
-    });
+    if (highlightedSections.length > 0) {
+      // Legacy mode: Process highlighted text
+      console.log(`Found ${highlightedSections.length} highlighted sections - using legacy mode`);
+      const replacementMap = await generateAllReplacements(instructionPrompt, highlightedSections, marketData);
+      
+      console.log(`Received ${replacementMap.size} replacements from AI`);
+      
+      replacements = highlightedSections.map((section, index) => {
+        const newText = replacementMap.get(index) || section.text;
+        console.log(`Section ${index}: "${section.text.substring(0, 30)}..." -> "${newText.substring(0, 30)}..."`);
+        return {
+          originalText: section.text,
+          newText: newText,
+          fullMatch: section.fullMatch
+        };
+      });
+    } else {
+      // New mode: AI identifies placeholders based on instruction prompt
+      console.log("No highlighted sections found - using AI-driven placeholder identification");
+      
+      // Extract all text runs from the document
+      const allTextRuns = extractAllTextRuns(documentXml);
+      console.log(`Extracted ${allTextRuns.length} text runs for AI analysis`);
+      
+      // Let AI identify what needs to be replaced based on the instruction prompt
+      replacements = await identifyAndReplaceWithAI(instructionPrompt, documentText, allTextRuns, marketData);
+      
+      console.log(`AI identified ${replacements.length} replacements`);
+      
+      if (replacements.length === 0) {
+        return new Response(
+          JSON.stringify({ error: "AI could not identify any text to replace based on the instruction prompt. Please check that your instruction prompt clearly describes what patterns or placeholders to look for." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
 
     // Create the modified document
     const modifiedXml = replaceHighlightedText(documentXml, replacements);
