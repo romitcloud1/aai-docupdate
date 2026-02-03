@@ -232,13 +232,19 @@ async function identifyAndReplaceWithAI(
             role: "system",
             content: `You are a professional document editor. Your task is to analyze an instruction prompt and a client document to identify which text elements need to be replaced and what they should be replaced with.
 
-CRITICAL: Follow the instruction prompt EXACTLY and RELIGIOUSLY. The instruction prompt contains all the rules for what to find and replace.
+CRITICAL: Follow the instruction prompt AND automatically detect financial data that needs updating.
 
 Your job:
-1. Read the instruction prompt carefully - it tells you EXACTLY what to look for and replace
+1. Read the instruction prompt carefully - it tells you what to look for and replace
 2. Examine the available text runs from the document
 3. Identify which runs match the patterns/placeholders described in the instruction prompt
-4. Generate appropriate replacement text following the instruction prompt's rules
+4. ALSO automatically identify and replace ANY financial data including:
+   - Monetary amounts (£, $, €, etc.) - generate realistic updated values
+   - Percentages (%) - generate realistic professional variations
+   - Dates (especially old dates) - update to current date or appropriate future dates
+   - Financial metrics, returns, rates, yields
+   - Investment values, pension amounts, fund values
+5. Generate appropriate replacement text
 
 IMPORTANT RULES:
 - Follow the instruction prompt's rules precisely
@@ -247,8 +253,9 @@ IMPORTANT RULES:
 - PRESERVE client names, beneficiary names, customer names - these are the people RECEIVING the document
 - PRESERVE signatory names in letter closings - keep the original name exactly as it appears
 - Use TODAY'S DATE for any date replacements (see market data for current date)
-- For numeric values: Generate realistic professional estimates
-- Only replace text that matches the patterns in the instruction prompt`
+- For numeric values: Generate realistic professional estimates with slight variations (e.g., £43,567 not £40,000)
+- For percentages: Use realistic professional variations (e.g., 42.3% instead of round 40%)
+- AUTOMATICALLY replace ALL outdated financial figures even if not explicitly mentioned in instruction prompt`
           },
           {
             role: "user",
