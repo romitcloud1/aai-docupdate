@@ -115,7 +115,7 @@ const Index = () => {
 
           <FileUpload
             label="Client Data"
-            description="Word document (.docx) with highlighted text to replace"
+            description="Word document (.docx) containing content to be processed"
             onFileSelect={setClientDataFile}
             selectedFile={clientDataFile}
           />
