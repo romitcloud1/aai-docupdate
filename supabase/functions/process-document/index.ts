@@ -350,6 +350,9 @@ function replaceHighlightedText(
 ): string {
   let modifiedXml = documentXml;
   
+  // Track unique text snippets that were replaced (to find their paragraphs later)
+  const replacedTextSnippets: string[] = [];
+  
   for (const replacement of replacements) {
     // Escape special regex characters in the fullMatch for safe replacement
     const escapedMatch = escapeRegExp(replacement.fullMatch);
@@ -364,24 +367,63 @@ function replaceHighlightedText(
     );
     
     // Remove all forms of highlight formatting so the replaced text is no longer highlighted
-    // 1. Remove <w:highlight> tags (self-closing and with content)
-    newRun = newRun.replace(/<w:highlight[^>]*\/>/g, '');
-    newRun = newRun.replace(/<w:highlight[^>]*>.*?<\/w:highlight>/g, '');
-    
-    // 2. Remove <w:shd> (shading) tags that create highlight effects
-    newRun = newRun.replace(/<w:shd[^>]*\/>/g, '');
-    newRun = newRun.replace(/<w:shd[^>]*>.*?<\/w:shd>/g, '');
-    
-    // 3. Remove background color attributes that may cause highlighting
-    newRun = newRun.replace(/w:fill="[^"]*"/g, '');
-    newRun = newRun.replace(/w14:paraId="[^"]*"/g, '');
+    newRun = removeHighlightFormatting(newRun);
     
     // Use regex for more reliable matching
     const regex = new RegExp(escapedMatch, 'g');
     modifiedXml = modifiedXml.replace(regex, newRun);
+    
+    // Store escaped new text to find its paragraph
+    replacedTextSnippets.push(escapeXml(replacement.newText));
   }
   
+  // Second pass: Clean up highlights from entire paragraphs containing replaced text
+  // This catches bullet points and other runs in the same paragraph
+  modifiedXml = cleanupParagraphHighlights(modifiedXml, replacedTextSnippets);
+  
   return modifiedXml;
+}
+
+// Helper to remove all highlight formatting from a string
+function removeHighlightFormatting(xml: string): string {
+  let result = xml;
+  
+  // Remove <w:highlight> tags (self-closing and with content)
+  result = result.replace(/<w:highlight[^>]*\/>/g, '');
+  result = result.replace(/<w:highlight[^>]*>.*?<\/w:highlight>/g, '');
+  
+  // Remove <w:shd> (shading) tags that create highlight effects
+  result = result.replace(/<w:shd[^>]*\/>/g, '');
+  result = result.replace(/<w:shd[^>]*>.*?<\/w:shd>/g, '');
+  
+  // Remove background color attributes
+  result = result.replace(/w:fill="[^"]*"/g, '');
+  
+  return result;
+}
+
+// Clean highlights from all runs in paragraphs that contain replaced text
+function cleanupParagraphHighlights(xml: string, replacedTexts: string[]): string {
+  let result = xml;
+  
+  // Find all paragraphs
+  const paragraphPattern = /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g;
+  
+  result = result.replace(paragraphPattern, (paragraph) => {
+    // Check if this paragraph contains any of our replaced text
+    const containsReplacedText = replacedTexts.some(text => 
+      paragraph.includes(text) || paragraph.includes(text.substring(0, 20))
+    );
+    
+    if (containsReplacedText) {
+      // Remove highlights from ALL runs in this paragraph, not just the one we replaced
+      return removeHighlightFormatting(paragraph);
+    }
+    
+    return paragraph;
+  });
+  
+  return result;
 }
 
 function escapeRegExp(string: string): string {
