@@ -110,8 +110,8 @@ const Index = () => {
           </p>
         </div>
 
-        {/* Upload Cards */}
-        <div className="space-y-6 mb-8">
+        {/* Upload Cards - Row Layout */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
           <FileUpload
             label="Instruction Prompt"
             description="Word document (.docx) containing your generation instructions"
@@ -121,7 +121,7 @@ const Index = () => {
 
           <FileUpload
             label="Client Data"
-            description="Word documents (.docx) containing content to be processed - upload one or more files"
+            description="Word documents (.docx) containing content to be processed"
             onFileSelect={() => {}}
             selectedFile={null}
             multiple={true}
@@ -130,31 +130,33 @@ const Index = () => {
           />
         </div>
 
-        {/* Generate Button */}
-        <Button
-          onClick={handleGenerate}
-          disabled={!isReady || status === "processing"}
-          className="w-full h-12 text-base font-medium"
-          size="lg"
-        >
-          <Sparkles className="w-5 h-5 mr-2" />
-          Generate Updated Document{clientDataFiles.length > 1 ? "s" : ""}
-        </Button>
+        {/* Action Buttons - Centered Row */}
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+          <Button
+            onClick={handleGenerate}
+            disabled={!isReady || status === "processing"}
+            className="w-full sm:w-auto px-8 h-12 text-base font-medium"
+            size="lg"
+          >
+            <Sparkles className="w-5 h-5 mr-2" />
+            Generate Updated Document{clientDataFiles.length > 1 ? "s" : ""}
+          </Button>
 
-        {/* Status & Download */}
-        <div className="mt-6 space-y-4">
-          <ProcessingStatus status={status} message={statusMessage} />
-          
           {downloadUrl && (
             <Button
               onClick={handleDownload}
               variant="outline"
-              className="w-full h-12 text-base border-success text-success hover:bg-success/10"
+              className="w-full sm:w-auto px-8 h-12 text-base border-success text-success hover:bg-success/10"
             >
               <FileOutput className="w-5 h-5 mr-2" />
-              Download {clientDataFiles.length > 1 ? "All Documents (ZIP)" : "Updated Document"}
+              Download {clientDataFiles.length > 1 ? "ZIP" : "Document"}
             </Button>
           )}
+        </div>
+
+        {/* Status */}
+        <div className="mt-6">
+          <ProcessingStatus status={status} message={statusMessage} />
         </div>
       </div>
     </div>
