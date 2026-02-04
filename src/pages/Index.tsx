@@ -21,10 +21,27 @@ const Index = () => {
   const handleGenerate = useCallback(async () => {
     if (!instructionFile || clientDataFiles.length === 0) return;
 
+    const totalFiles = clientDataFiles.length;
     setStatus("processing");
-    setStatusMessage(`Analyzing ${clientDataFiles.length} document${clientDataFiles.length > 1 ? "s" : ""} and generating content...`);
+    setStatusMessage(totalFiles > 1 
+      ? `Analyzing 1 of ${totalFiles} documents and generating content...`
+      : `Analyzing document and generating content...`
+    );
     setDownloadUrl(null);
     setFilesChanges([]);
+
+    // Simulate progress updates for multi-file processing
+    let progressInterval: NodeJS.Timeout | null = null;
+    if (totalFiles > 1) {
+      let currentDoc = 1;
+      progressInterval = setInterval(() => {
+        currentDoc = Math.min(currentDoc + 1, totalFiles);
+        setStatusMessage(`Analyzing ${currentDoc} of ${totalFiles} documents and generating content...`);
+        if (currentDoc >= totalFiles && progressInterval) {
+          clearInterval(progressInterval);
+        }
+      }, 8000); // Update every 8 seconds (rough estimate per document)
+    }
 
     try {
       const formData = new FormData();
@@ -46,6 +63,8 @@ const Index = () => {
         },
         body: formData,
       });
+
+      if (progressInterval) clearInterval(progressInterval);
 
       if (!response.ok) {
         const errorData = await response.json();
@@ -70,9 +89,12 @@ const Index = () => {
       
       // Extract changes metadata
       const changesFile = zip.file("_changes.json");
+      console.log("Changes file found:", !!changesFile);
       if (changesFile) {
         const changesText = await changesFile.async("text");
+        console.log("Changes content:", changesText.substring(0, 500));
         const changes: FileChanges[] = JSON.parse(changesText);
+        console.log("Parsed changes:", changes.length, "files");
         setFilesChanges(changes);
       }
 
@@ -106,8 +128,9 @@ const Index = () => {
       }
 
       setStatus("success");
-      setStatusMessage(`${clientDataFiles.length} document${clientDataFiles.length > 1 ? "s" : ""} processed successfully!`);
+      setStatusMessage(`${totalFiles} document${totalFiles > 1 ? "s" : ""} processed successfully!`);
     } catch (err) {
+      if (progressInterval) clearInterval(progressInterval);
       setStatus("error");
       setStatusMessage(err instanceof Error ? err.message : "An unexpected error occurred");
     }
