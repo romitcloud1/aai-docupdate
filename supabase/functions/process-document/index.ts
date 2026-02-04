@@ -1067,6 +1067,7 @@ serve(async (req) => {
 
     // Process each client file
     const processedFiles: { name: string; buffer: ArrayBuffer }[] = [];
+    const allChanges: { fileName: string; changes: { originalText: string; newText: string }[] }[] = [];
 
     for (let fileIndex = 0; fileIndex < clientFiles.length; fileIndex++) {
       const clientFile = clientFiles[fileIndex];
@@ -1121,6 +1122,17 @@ serve(async (req) => {
         }
       }
 
+      // Track changes for this file (only include where text actually changed)
+      const fileChanges = replacements
+        .filter(r => r.originalText !== r.newText)
+        .map(r => ({
+          originalText: r.originalText,
+          newText: r.newText
+        }));
+      
+      const outputFileName = `${clientFile.originalName}_${dateStr}.docx`;
+      allChanges.push({ fileName: outputFileName, changes: fileChanges });
+
       // Create the modified document
       const modifiedXml = replaceHighlightedText(documentXml, replacements);
       clientZip.file("word/document.xml", modifiedXml);
@@ -1131,40 +1143,34 @@ serve(async (req) => {
         compressionOptions: { level: 9 }
       });
 
-      const outputFileName = `${clientFile.originalName}_${dateStr}.docx`;
       processedFiles.push({ name: outputFileName, buffer: outputBuffer });
       
-      console.log(`Completed: ${outputFileName}`);
+      console.log(`Completed: ${outputFileName} with ${fileChanges.length} changes`);
     }
 
-    // If only one file, return it directly
-    if (processedFiles.length === 1) {
-      console.log(`Returning single file: ${processedFiles[0].name}`);
-      return new Response(processedFiles[0].buffer, {
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          "Content-Disposition": `attachment; filename="${processedFiles[0].name}"`
-        }
-      });
-    }
-
-    // Multiple files: create a ZIP archive
-    console.log(`Creating ZIP archive with ${processedFiles.length} files`);
+    // Create output ZIP that includes changes.json
     const outputZip = new JSZip();
     
+    // Add all processed documents
     for (const file of processedFiles) {
       outputZip.file(file.name, file.buffer);
     }
     
+    // Add changes metadata
+    outputZip.file("_changes.json", JSON.stringify(allChanges, null, 2));
+
     const zipBuffer = await outputZip.generateAsync({
       type: "arraybuffer",
       compression: "DEFLATE",
       compressionOptions: { level: 9 }
     });
 
-    const zipFileName = `processed_documents_${dateStr}.zip`;
-    console.log(`Returning ZIP: ${zipFileName}`);
+    // Determine filename based on number of files
+    const zipFileName = processedFiles.length === 1 
+      ? processedFiles[0].name.replace('.docx', '_package.zip')
+      : `processed_documents_${dateStr}.zip`;
+    
+    console.log(`Returning ZIP: ${zipFileName} with ${allChanges.length} file(s) and changes metadata`);
     
     return new Response(zipBuffer, {
       headers: {

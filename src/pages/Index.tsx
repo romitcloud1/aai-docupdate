@@ -1,9 +1,11 @@
 import { useState, useCallback } from "react";
 import { FileUpload } from "@/components/FileUpload";
 import { ProcessingStatus } from "@/components/ProcessingStatus";
+import { ChangesViewer, FileChanges } from "@/components/ChangesViewer";
 import { Button } from "@/components/ui/button";
 import { FileOutput, Sparkles } from "lucide-react";
 import advisoryAiLogo from "@/assets/advisoryai-logo.png";
+import JSZip from "jszip";
 
 type ProcessingState = "idle" | "processing" | "success" | "error";
 
@@ -14,6 +16,7 @@ const Index = () => {
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [downloadFilename, setDownloadFilename] = useState<string>("");
+  const [filesChanges, setFilesChanges] = useState<FileChanges[]>([]);
 
   const handleGenerate = useCallback(async () => {
     if (!instructionFile || clientDataFiles.length === 0) return;
@@ -21,6 +24,7 @@ const Index = () => {
     setStatus("processing");
     setStatusMessage(`Analyzing ${clientDataFiles.length} document${clientDataFiles.length > 1 ? "s" : ""} and generating content...`);
     setDownloadUrl(null);
+    setFilesChanges([]);
 
     try {
       const formData = new FormData();
@@ -52,9 +56,8 @@ const Index = () => {
 
       // Extract filename from Content-Disposition header
       const contentDisposition = response.headers.get("Content-Disposition");
-      const contentType = response.headers.get("Content-Type");
       
-      let filename = clientDataFiles.length > 1 ? "processed-documents.zip" : "updated-document.docx";
+      let filename = "processed-documents.zip";
       if (contentDisposition) {
         const match = contentDisposition.match(/filename="([^"]+)"/);
         if (match) {
@@ -62,17 +65,48 @@ const Index = () => {
         }
       }
 
-      // Determine blob type based on response
-      const blobType = contentType || (clientDataFiles.length > 1 
-        ? "application/zip" 
-        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      // Always a ZIP now - extract changes.json and create download URL
+      const zip = await JSZip.loadAsync(data);
+      
+      // Extract changes metadata
+      const changesFile = zip.file("_changes.json");
+      if (changesFile) {
+        const changesText = await changesFile.async("text");
+        const changes: FileChanges[] = JSON.parse(changesText);
+        setFilesChanges(changes);
+      }
 
-      const blob = new Blob([data], { type: blobType });
-      const url = URL.createObjectURL(blob);
-      setDownloadUrl(url);
-      setDownloadFilename(filename);
+      // Create download blob (remove _changes.json for cleaner download)
+      const downloadZip = new JSZip();
+      const files = Object.keys(zip.files);
+      for (const fileName of files) {
+        if (fileName !== "_changes.json" && !zip.files[fileName].dir) {
+          const fileData = await zip.files[fileName].async("arraybuffer");
+          downloadZip.file(fileName, fileData);
+        }
+      }
+
+      // If only one document file, extract it directly for download
+      const docFiles = files.filter(f => f.endsWith('.docx'));
+      if (docFiles.length === 1) {
+        const docData = await zip.files[docFiles[0]].async("arraybuffer");
+        const blob = new Blob([docData], { 
+          type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" 
+        });
+        const url = URL.createObjectURL(blob);
+        setDownloadUrl(url);
+        setDownloadFilename(docFiles[0]);
+      } else {
+        // Multiple files - create clean ZIP without _changes.json
+        const cleanZipBuffer = await downloadZip.generateAsync({ type: "arraybuffer" });
+        const blob = new Blob([cleanZipBuffer], { type: "application/zip" });
+        const url = URL.createObjectURL(blob);
+        setDownloadUrl(url);
+        setDownloadFilename(filename);
+      }
+
       setStatus("success");
-      setStatusMessage(`${clientDataFiles.length} document${clientDataFiles.length > 1 ? "s" : ""} processed successfully! Click below to download.`);
+      setStatusMessage(`${clientDataFiles.length} document${clientDataFiles.length > 1 ? "s" : ""} processed successfully!`);
     } catch (err) {
       setStatus("error");
       setStatusMessage(err instanceof Error ? err.message : "An unexpected error occurred");
@@ -158,6 +192,13 @@ const Index = () => {
         <div className="mt-6">
           <ProcessingStatus status={status} message={statusMessage} />
         </div>
+
+        {/* Changes Viewer */}
+        {filesChanges.length > 0 && (
+          <div className="mt-6">
+            <ChangesViewer filesChanges={filesChanges} />
+          </div>
+        )}
       </div>
     </div>
   );
