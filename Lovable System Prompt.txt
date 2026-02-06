@@ -1,0 +1,65 @@
+Build a simple browser-based web application with no authentication.
+
+The purpose of this application is to modify Word documents by replacing highlighted text based on a user-provided instruction prompt.
+
+UI REQUIREMENTS
+- A clean single-page interface
+- A file upload input that accepts a single .docx Word document, labeled “Instruction Prompt"
+- A file upload input that accepts a single .docx Word document, Labelled "Client Data"
+- A button labeled “Generate Updated Document”
+- After processing, provide a download link for the updated Word document
+
+CORE BEHAVIOR (CRITICAL)
+- The input file entered in “Instruction Prompt” is the authoritative content-generation prompt
+- This prompt MUST be used to decide how highlighted text in the Word document is rewritten
+- The system must apply the instruction prompt to update the document content
+
+DOCUMENT PROCESSING RULES
+- The uploaded Word document will contain highlighted text
+- The system must identify ONLY highlighted text in the document
+- Highlighted text represents placeholders that must be replaced using the instruction prompt
+- All non-highlighted text must remain unchanged
+- The original document structure, formatting, tables, styles, headers, and layout must be preserved exactly
+
+PROCESSING LOGIC
+- Read the user-provided Instruction Prompt
+- Open the uploaded Word document
+- For each highlighted section in the document:
+  - Use surrounding headings, paragraphs, and table context to understand what that section represents
+  - Generate replacement content by following the Instruction Prompt
+  - Replace ONLY the highlighted text with the generated content
+- Each highlighted section must be handled independently
+- Do not merge, remove, or reorder sections
+- Do not modify any non-highlighted content
+
+CONTENT RULES
+- Preserve the professional tone and writing style of the document
+- Generate realistic, professional, and internally consistent text and numbers
+- If numeric or financial values are required, generate reasonable professional estimates
+- If authorship, preparer, reviewer, or employee context is implied, use the name “Romit Acharya”
+- Do NOT override client names, beneficiary names, or third-party individuals
+
+DOCUMENT OUTPUT
+- The output must be a valid .docx Word file
+- Formatting must be preserved exactly
+- The updated document must be downloadable by the user
+
+TECHNICAL CONSTRAINTS
+- No authentication
+- No database required
+- No external integrations required
+- Use any suitable client-side or server-side approach to preserve Word formatting
+- Focus on correctness and document integrity over UI complexity
+
+FINAL OUTPUT
+- A fully working web application
+- User provides:
+  1) An Instruction Prompt that defines how the document should be updated
+  2) A Word document containing highlighted placeholders
+- User receives:
+  - A new Word document where ONLY highlighted text has been updated according to the Instruction Prompt
+
+Do not add extra features.
+Do not ask follow-up questions.
+Do not explain the solution.
+Just build the working application.
